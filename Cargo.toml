@@ -1,0 +1,43 @@
+[package]
+name = "omhemill"
+version = "0.1.0"
+edition = "2021"
+authors = ["Sungam"]
+license = "GPL-3.0-or-later"
+description = "A spectral resonance suppressor. Built on the DSP core of Robbert van der Helm's Spectral Compressor."
+homepage = "https://github.com/robbert-vdh/spectral-compressor"
+
+[workspace]
+members = ["xtask"]
+
+[lib]
+crate-type = ["lib", "cdylib"]
+
+# A windowed preview of the editor, for looking at the GUI without a host. Kept behind a feature
+# flag because nih-plug's standalone wrapper links against libjack, and the plugin itself must not
+# pick up that dependency or hosts will fail to load it.
+[[bin]]
+name = "omhemill_standalone"
+path = "src/bin/omhemill_standalone.rs"
+required-features = ["standalone"]
+
+[features]
+default = []
+standalone = ["nih_plug/standalone"]
+
+[dependencies]
+nih_plug = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "de421011f41a6d10fc8c7a6084e4f4dee0143683", features = ["assert_process_allocs"] }
+nih_plug_vizia = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "de421011f41a6d10fc8c7a6084e4f4dee0143683" }
+
+realfft = "3.0"
+
+# For the GUI
+atomic_float = "0.1"
+crossbeam = "0.8"
+open = "3.0"
+serde = { version = "1.0", features = ["derive"] }
+triple_buffer = "6.2"
+
+[profile.release]
+lto = "thin"
+strip = "symbols"

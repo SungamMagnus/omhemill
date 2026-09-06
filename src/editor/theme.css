@@ -1,0 +1,230 @@
+/* Ómhemill — the Sungam plugin palette: cream paper, ink rules, one accent per bank. */
+
+:root {
+  background-color: #f2f1ec;
+  color: #191c1b;
+  font-size: 13;
+  font-weight: light;
+}
+
+.frame {
+  child-space: 16px;
+  row-between: 12px;
+  background-color: #f2f1ec;
+}
+
+/* ── header ────────────────────────────────────────────────────────── */
+
+.header {
+  child-bottom: 6px;
+  col-between: 12px;
+}
+
+/* vizia has no per-side border properties, so rules are their own elements */
+.divider {
+  height: 1px;
+  width: 1s;
+  background-color: #dcdbd4;
+}
+
+.wordmark {
+  font-size: 26;
+  color: #191c1b;
+  top: 1s;
+  bottom: 1s;
+}
+
+.tagline {
+  font-size: 12;
+  color: #8d8f8b;
+  top: 1s;
+  bottom: 4px;
+}
+
+.strip-label {
+  font-size: 10;
+  color: #8d8f8b;
+  top: 1s;
+  bottom: 1s;
+}
+
+.mode-slider {
+  width: 330px;
+  height: 26px;
+  font-size: 11;
+  top: 1s;
+  bottom: 1s;
+}
+
+/* The resize handle lives in the bottom right corner. Give it a bit more presence and a
+   larger grab area than the stock 20x20 so it is actually findable. */
+resize-handle {
+  color: #191c1b;
+  width: 26px;
+  height: 26px;
+  opacity: 0.35;
+}
+resize-handle:hover,
+resize-handle:active {
+  opacity: 0.8;
+}
+
+/* ── display ───────────────────────────────────────────────────────── */
+
+.display,
+analyzer {
+  background-color: #f7f6f3;
+  border-color: #191c1b;
+  border-width: 1px;
+  color: #8d8f8b;
+}
+
+/* ── node strip ────────────────────────────────────────────────────── */
+
+.strip {
+  child-bottom: 4px;
+}
+
+.node-cell {
+  child-left: 10px;
+}
+
+.node-freq {
+  font-size: 12;
+  color: #191c1b;
+  top: 1s;
+  bottom: 1s;
+}
+
+.node-depth {
+  font-size: 10;
+  color: #8d8f8b;
+}
+
+param-button.node-dot {
+  width: 19px;
+  height: 19px;
+  child-space: 1s;
+  font-size: 9;
+  border-width: 1px;
+  border-color: #8d8f8b;
+  color: #8d8f8b;
+  background-color: #00000000;
+}
+param-button.node-dot:hover {
+  background-color: #c2521a20;
+}
+param-button.node-dot:checked {
+  background-color: #c2521a;
+  border-color: #c2521a;
+  color: #f2f1ec;
+}
+
+/* ── banks ─────────────────────────────────────────────────────────── */
+
+.bank-rule {
+  height: 2px;
+  width: 1s;
+  background-color: #191c1b;
+}
+
+.bank-title {
+  font-size: 11;
+  color: #191c1b;
+}
+
+.bank-sub {
+  font-size: 9;
+  color: #b0b1ac;
+  top: 1s;
+  bottom: 1s;
+}
+
+.rule-detect { background-color: #c2521a; color: #c2521a; }
+.rule-shape { background-color: #2e4b8f; color: #2e4b8f; }
+.rule-time { background-color: #0f7a72; color: #0f7a72; }
+.rule-spectrum { background-color: #a8285a; color: #a8285a; }
+.rule-output { background-color: #191c1b; color: #191c1b; }
+
+/* Labels pick up `color` from the rule classes above, but must not paint a background */
+label.bank-title {
+  background-color: #00000000;
+}
+
+/* ── knobs ─────────────────────────────────────────────────────────── */
+
+knob-dial {
+  background-color: #f7f6f3;
+  border-color: #191c1b;
+}
+
+.knob-cell {
+  child-space: 1px;
+}
+
+.knob-value {
+  font-size: 11;
+  color: #191c1b;
+  top: 3px;
+}
+
+.knob-name {
+  font-size: 9;
+  color: #8d8f8b;
+}
+
+/* ── footer ────────────────────────────────────────────────────────── */
+
+.footer {
+  child-top: 2px;
+  col-between: 8px;
+}
+
+.footer-label {
+  font-size: 9;
+  color: #b0b1ac;
+  top: 1s;
+  bottom: 1s;
+}
+
+.footer-value {
+  font-size: 10;
+  color: #191c1b;
+  top: 1s;
+  bottom: 1s;
+}
+
+/* ── stock widgets, recoloured ─────────────────────────────────────── */
+
+param-slider {
+  border-color: #191c1b;
+  background-color: #00000000;
+}
+param-slider:active,
+param-slider:hover {
+  background-color: #191c1b0d;
+}
+param-slider .fill {
+  background-color: #c2521a;
+}
+param-slider .fill--modulation {
+  background-color: #c2521a55;
+}
+param-slider .value-entry .caret {
+  background-color: #191c1b;
+}
+param-slider .value-entry .selection {
+  background-color: #191c1b30;
+}
+
+param-button {
+  border-color: #191c1b;
+  background-color: #00000000;
+}
+param-button:hover {
+  background-color: #191c1b12;
+}
+param-button:checked {
+  background-color: #191c1b;
+  color: #f2f1ec;
+}
