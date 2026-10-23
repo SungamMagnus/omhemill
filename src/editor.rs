@@ -41,10 +41,6 @@ mod controls;
 const GUI_WIDTH: u32 = 1200;
 const GUI_HEIGHT: u32 = 645;
 
-/// The band panel's width, matching the stylesheet, and its distance from the display's edges.
-const PANEL_WIDTH: f32 = 440.0;
-const PANEL_MARGIN: f32 = 10.0;
-
 /// One colour per band, so you can tell which band a handle, chip or panel belongs to while
 /// adjusting it. Spaced around the hue circle at a like lightness, skipping amber, which is kept
 /// for live state (the gain reduction).
@@ -110,11 +106,6 @@ pub struct Data {
     pub(crate) sample_rate: Arc<AtomicF32>,
     /// The band whose panel is open, if any. Shared by the display and the chips.
     pub(crate) selected_band: Option<usize>,
-    /// Counts selections, including re-selecting the same band, so the band panel is placed
-    /// afresh each time a band is clicked and at no other time.
-    pub(crate) selection_serial: u32,
-    /// The display's width in logical pixels as last drawn, for placing the band panel.
-    pub(crate) display_width: Arc<AtomicF32>,
     /// The band being soloed, if any. Mirrored into [`OmhemillParams::solo_band`] for the audio
     /// thread.
     pub(crate) solo_band: Option<usize>,
@@ -217,10 +208,7 @@ impl Data {
 impl Model for Data {
     fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
         event.map(|selection, _| match selection {
-            BandSelection::Select(selected_band) => {
-                self.selected_band = *selected_band;
-                self.selection_serial = self.selection_serial.wrapping_add(1);
-            }
+            BandSelection::Select(selected_band) => self.selected_band = *selected_band,
         });
 
         event.map(|solo, _| match solo {
@@ -285,8 +273,11 @@ pub(crate) fn create(editor_state: Arc<ViziaState>, editor_data: Data) -> Option
         VStack::new(cx, |cx| {
             header(cx);
             Element::new(cx).class("divider");
-            bands(cx);
-            banks(cx);
+            HStack::new(cx, |cx| {
+                controls_column(cx);
+                bands(cx);
+            })
+            .class("body");
         })
         .class("frame-root");
 
@@ -470,29 +461,19 @@ fn preset_row(cx: &mut Context, idx: usize, name: &str, is_current: bool) {
         });
 }
 
-/// The spectrum display and the row of band chips under it, in one coral frame. The analyzer
-/// draws its own grid, axis labels, spectrum, sensitivity line and band handles; the selected
-/// band's panel floats over it.
+/// The spectrum display, the selected band's panel in a strip under it, and the row of band
+/// chips, in one coral frame. The analyzer draws its own grid, axis labels, spectrum, threshold
+/// line and band handles. Nothing sits on top of the spectrum.
 fn bands(cx: &mut Context) {
-    VStack::new(cx, |cx| {
-        frame(cx, "BANDS", "coral", |cx| {
-            ZStack::new(cx, |cx| {
-                Analyzer::new(cx, Data::analyzer_data, Data::sample_rate, Data::params)
-                    .width(Stretch(1.0))
-                    .height(Stretch(1.0));
-
-                band_panel_overlay(cx);
-            })
+    frame(cx, "BANDS", "coral", |cx| {
+        Analyzer::new(cx, Data::analyzer_data, Data::sample_rate, Data::params)
             .width(Stretch(1.0))
             .height(Stretch(1.0));
 
-            band_chips(cx);
-        })
-        .height(Stretch(1.0));
+        band_strip(cx);
+        band_chips(cx);
     })
-    .child_left(Pixels(32.0))
-    .child_right(Pixels(32.0))
-    .child_top(Pixels(22.0))
+    .width(Stretch(1.0))
     .height(Stretch(1.0));
 }
 
@@ -553,254 +534,193 @@ fn band_chips(cx: &mut Context) {
     .class("chips");
 }
 
-/// The selected band's panel, floating over the display at the bottom, centred under the band
-/// as far as the display allows. It is placed when the band is clicked and then stays put, so it
-/// never moves while you adjust it; the next click on a band places it again.
-///
-/// The panel is placed directly in the display's stack rather than in a full-size row with
-/// spacers: vizia skips a non-hoverable view and everything inside it when hit testing, so such a
-/// row would either swallow the display's clicks or hide the panel's own.
-fn band_panel_overlay(cx: &mut Context) {
-    Binding::new(cx, Data::selection_serial, |cx, _| {
-        let Some(idx) = Data::selected_band.get(cx) else {
-            return;
-        };
-
-        let params = Data::params.get(cx);
-        let t = Analyzer::freq_to_t(params.threshold.bands[idx].frequency.value()).clamp(0.0, 1.0);
-        let display_width = Data::display_width.get(cx).load(Ordering::Relaxed);
-
-        let panel = band_panel(cx, idx)
-            .position_type(PositionType::SelfDirected)
-            .top(Stretch(1.0))
-            .bottom(Pixels(PANEL_MARGIN));
-        if display_width > PANEL_WIDTH + PANEL_MARGIN * 2.0 {
-            let left = (t * display_width - PANEL_WIDTH / 2.0)
-                .clamp(PANEL_MARGIN, display_width - PANEL_WIDTH - PANEL_MARGIN);
-            panel.left(Pixels(left)).right(Stretch(1.0));
-        } else {
-            // Not drawn yet: split the free space instead
-            panel
-                .left(Stretch(t))
-                .right(Stretch(1.0 - t))
-                .min_left(Pixels(PANEL_MARGIN))
-                .min_right(Pixels(PANEL_MARGIN));
-        }
-    });
+/// The strip under the spectrum: the selected band's panel, or a hint when no band is selected.
+fn band_strip(cx: &mut Context) {
+    HStack::new(cx, |cx| {
+        Binding::new(cx, Data::selected_band, |cx, selected_band| {
+            match selected_band.get(cx) {
+                Some(idx) => {
+                    band_panel(cx, idx);
+                }
+                None => {
+                    Label::new(
+                        cx,
+                        "Click a band to edit it. Double-click the display to add one.",
+                    )
+                    .class("band-hint");
+                }
+            }
+        });
+    })
+    .class("band-strip");
 }
 
-/// The band panel: on/off, the shape, solo and close in the top row; frequency, Q and threshold;
-/// then the band's dynamics in lilac. A cut has no threshold or dynamics, only a note saying
-/// what it does.
-fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, VStack> {
+/// The band panel, one compact row in the band's colour: on/off, the shape, frequency, Q and
+/// threshold, then the band's dynamics in lilac (ratio and timing multipliers, range and mode),
+/// then solo and close. A cut has no threshold or dynamics, only a note saying what it does.
+fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, HStack> {
     let color_class = band_class(idx);
-    VStack::new(cx, move |cx| {
+    HStack::new(cx, move |cx| {
         let color_class = band_class(idx);
+
+        ParamButton::new(cx, Data::params, move |p| &p.threshold.bands[idx].enabled)
+            .with_label("")
+            .class("panel-on")
+            .class(&color_class);
+        Label::new(cx, &format!("BAND {}", idx + 1))
+            .class("panel-title")
+            .class(&color_class);
+
         HStack::new(cx, move |cx| {
-            ParamButton::new(cx, Data::params, move |p| &p.threshold.bands[idx].enabled)
-                .with_label("")
-                .class("panel-on")
-                .class(&color_class);
-            Label::new(cx, &format!("BAND {}", idx + 1))
-                .class("panel-title")
-                .class(&color_class);
-
-            HStack::new(cx, move |cx| {
-                let shapes = [
-                    BandShape::LowCut,
-                    BandShape::LowShelf,
-                    BandShape::Bell,
-                    BandShape::HighShelf,
-                    BandShape::HighCut,
-                ];
-                let last = (shapes.len() - 1) as f32;
-                for (shape_idx, shape) in shapes.into_iter().enumerate() {
-                    SegmentButton::with_content(
-                        cx,
-                        Data::params,
-                        move |p| &p.threshold.bands[idx].shape,
-                        shape_idx as f32 / last,
-                        move |cx| {
-                            ShapeIcon::new(cx, shape);
-                        },
-                    )
-                    .class("shape")
-                    .class(&band_class(idx));
-                }
-            })
-            .class("segmented");
-
-            Element::new(cx).width(Stretch(1.0)).height(Pixels(0.0));
-
-            Button::new(
-                cx,
-                move |cx| cx.emit(SoloEvent::Toggle(idx)),
-                |cx| Label::new(cx, "SOLO"),
-            )
-            .class("panel-solo")
-            .checked(Data::solo_band.map(move |solo_band| *solo_band == Some(idx)));
-
-            Button::new(
-                cx,
-                |cx| cx.emit(BandSelection::Select(None)),
-                |cx| Label::new(cx, "×"),
-            )
-            .class("panel-close");
+            let shapes = [
+                BandShape::LowCut,
+                BandShape::LowShelf,
+                BandShape::Bell,
+                BandShape::HighShelf,
+                BandShape::HighCut,
+            ];
+            let last = (shapes.len() - 1) as f32;
+            for (shape_idx, shape) in shapes.into_iter().enumerate() {
+                SegmentButton::with_content(
+                    cx,
+                    Data::params,
+                    move |p| &p.threshold.bands[idx].shape,
+                    shape_idx as f32 / last,
+                    move |cx| {
+                        ShapeIcon::new(cx, shape);
+                    },
+                )
+                .class("shape")
+                .class(&band_class(idx));
+            }
         })
-        .class("panel-row");
+        .class("segmented");
 
         let is_cut = Data::params.map(move |p| p.threshold.bands[idx].shape.value().is_cut());
         Binding::new(cx, is_cut, move |cx, is_cut| {
             let is_cut = is_cut.get(cx);
+            let color_class = band_class(idx);
 
-            HStack::new(cx, move |cx| {
-                labeled_bar(
-                    cx,
-                    Data::params,
-                    move |p| &p.threshold.bands[idx].frequency,
-                    "FREQ",
-                    &band_class(idx),
-                );
-                labeled_bar(
-                    cx,
-                    Data::params,
-                    move |p| &p.threshold.bands[idx].q,
-                    "Q",
-                    &band_class(idx),
-                );
-                if !is_cut {
-                    labeled_bar(
-                        cx,
-                        Data::params,
-                        move |p| &p.threshold.bands[idx].threshold_db,
-                        "THRESHOLD",
-                        &band_class(idx),
-                    );
-                }
-            })
-            .class("bars");
+            labeled_bar(
+                cx,
+                Data::params,
+                move |p| &p.threshold.bands[idx].frequency,
+                "FREQ",
+                &color_class,
+            );
+            labeled_bar(
+                cx,
+                Data::params,
+                move |p| &p.threshold.bands[idx].q,
+                "Q",
+                &color_class,
+            );
 
             if is_cut {
-                Label::new(
-                    cx,
-                    "A cut has no threshold: it only sets where the compression stops.",
-                )
-                .class("panel-note");
-            } else {
-                // These scale the main ratio and timing, and limit the gain change, in this band
-                // only
-                VStack::new(cx, move |cx| {
-                    HStack::new(cx, |cx| {
-                        Label::new(cx, "BAND DYNAMICS").class("trims-title");
-                        Element::new(cx).class("trim-rule");
-                    })
-                    .class("trims-heading");
-                    HStack::new(cx, move |cx| {
-                        labeled_bar(
-                            cx,
-                            Data::params,
-                            move |p| &p.threshold.bands[idx].sharp,
-                            "RATIO x",
-                            "lilac",
-                        );
-                        labeled_bar(
-                            cx,
-                            Data::params,
-                            move |p| &p.threshold.bands[idx].speed,
-                            "ATTACK/REL x",
-                            "lilac",
-                        );
-                        labeled_bar(
-                            cx,
-                            Data::params,
-                            move |p| &p.threshold.bands[idx].range_db,
-                            "RANGE",
-                            "lilac",
-                        );
-                        VStack::new(cx, move |cx| {
-                            Label::new(cx, "MODE").class("bar-name");
-                            segmented(
-                                cx,
-                                Data::params,
-                                move |p| &p.threshold.bands[idx].action,
-                                &["AUTO", "DOWN", "UP", "OFF"],
-                                "lilac",
-                            );
-                        })
-                        .class("bar-cell")
-                        .width(Auto);
-                    })
-                    .class("bars");
-                })
-                .class("trims");
+                Label::new(cx, "A cut has no threshold: it only sets where compression stops.")
+                    .class("panel-note");
+                return;
             }
+
+            labeled_bar(
+                cx,
+                Data::params,
+                move |p| &p.threshold.bands[idx].threshold_db,
+                "THRESH",
+                &color_class,
+            );
+
+            // The band's dynamics scale the main ratio and timing, and limit the gain change, in
+            // this band only
+            Element::new(cx).class("dynamics-rule");
+            labeled_bar(
+                cx,
+                Data::params,
+                move |p| &p.threshold.bands[idx].sharp,
+                "RATIO x",
+                "lilac",
+            );
+            labeled_bar(
+                cx,
+                Data::params,
+                move |p| &p.threshold.bands[idx].speed,
+                "ATK/REL x",
+                "lilac",
+            );
+            labeled_bar(
+                cx,
+                Data::params,
+                move |p| &p.threshold.bands[idx].range_db,
+                "RANGE",
+                "lilac",
+            );
+            VStack::new(cx, move |cx| {
+                Label::new(cx, "MODE").class("bar-name");
+                segmented(
+                    cx,
+                    Data::params,
+                    move |p| &p.threshold.bands[idx].action,
+                    &["AUTO", "DOWN", "UP", "OFF"],
+                    "lilac",
+                );
+            })
+            .class("bar-cell")
+            .class("mode-cell");
         });
+
+        Button::new(
+            cx,
+            move |cx| cx.emit(SoloEvent::Toggle(idx)),
+            |cx| Label::new(cx, "SOLO"),
+        )
+        .class("panel-solo")
+        .checked(Data::solo_band.map(move |solo_band| *solo_band == Some(idx)));
+
+        Button::new(
+            cx,
+            |cx| cx.emit(BandSelection::Select(None)),
+            |cx| Label::new(cx, "×"),
+        )
+        .class("panel-close");
     })
     .class("band-panel")
     .class(&color_class)
 }
 
-/// The global controls, one frame per signal colour.
-fn banks(cx: &mut Context) {
-    HStack::new(cx, |cx| {
+/// The global controls in a column on the left, one frame per signal colour, so the spectrum
+/// gets the window's full height.
+fn controls_column(cx: &mut Context) {
+    VStack::new(cx, |cx| {
         frame(cx, "COMPRESSOR", "coral", |cx| {
-            HStack::new(cx, |cx| {
-                labeled_bar(cx, Data::params, |p| &p.threshold.threshold_db, "THRESHOLD", "coral");
-                labeled_bar(
-                    cx,
-                    Data::params,
-                    |p| &p.compressors.downwards.ratio,
-                    "RATIO",
-                    "coral",
-                );
-                labeled_bar(
-                    cx,
-                    Data::params,
-                    |p| &p.compressors.downwards.knee_width_db,
-                    "KNEE",
-                    "coral",
-                );
-            })
-            .class("bars");
+            labeled_bar(cx, Data::params, |p| &p.threshold.threshold_db, "THRESHOLD", "coral");
+            labeled_bar(cx, Data::params, |p| &p.compressors.downwards.ratio, "RATIO", "coral");
+            labeled_bar(
+                cx,
+                Data::params,
+                |p| &p.compressors.downwards.knee_width_db,
+                "KNEE",
+                "coral",
+            );
         })
-        .width(Stretch(3.0))
-        .height(Auto);
+        .class("column-frame");
 
         frame(cx, "TIME", "teal", |cx| {
-            HStack::new(cx, |cx| {
-                labeled_bar(
-                    cx,
-                    Data::params,
-                    |p| &p.global.compressor_attack_ms,
-                    "ATTACK",
-                    "teal",
-                );
-                labeled_bar(
-                    cx,
-                    Data::params,
-                    |p| &p.global.compressor_release_ms,
-                    "RELEASE",
-                    "teal",
-                );
-            })
-            .class("bars");
+            labeled_bar(cx, Data::params, |p| &p.global.compressor_attack_ms, "ATTACK", "teal");
+            labeled_bar(
+                cx,
+                Data::params,
+                |p| &p.global.compressor_release_ms,
+                "RELEASE",
+                "teal",
+            );
         })
-        .width(Stretch(2.0))
-        .height(Auto);
+        .class("column-frame");
 
         frame(cx, "OUTPUT", "steel", |cx| {
-            HStack::new(cx, |cx| {
-                labeled_bar(cx, Data::params, |p| &p.global.dry_wet_ratio, "MIX", "steel");
-                labeled_bar(cx, Data::params, |p| &p.global.output_gain, "OUTPUT", "steel");
-            })
-            .class("bars");
+            labeled_bar(cx, Data::params, |p| &p.global.dry_wet_ratio, "MIX", "steel");
+            labeled_bar(cx, Data::params, |p| &p.global.output_gain, "OUTPUT", "steel");
         })
-        .width(Stretch(2.0))
-        .height(Auto);
+        .class("column-frame");
     })
-    .class("banks")
-    .child_left(Pixels(32.0))
-    .child_right(Pixels(32.0))
-    .child_top(Pixels(24.0))
-    .child_bottom(Pixels(20.0));
+    .class("controls-column");
 }

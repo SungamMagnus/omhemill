@@ -403,41 +403,63 @@ param-button.chip-dot:checked {
   background-color: #ed815924;
 }
 
+/* ── layout ──────────────────────────────────────────────────────── */
+
+/* The global controls in a column on the left, the bands taking the rest */
+.body {
+  height: 1s;
+  child-left: 32px;
+  child-right: 32px;
+  child-top: 22px;
+  child-bottom: 20px;
+  col-between: 20px;
+}
+
+.controls-column {
+  width: 220px;
+  height: 1s;
+  row-between: 20px;
+}
+
+.column-frame {
+  height: auto;
+  row-between: 8px;
+}
+
 /* ── band panel ────────────────────────────────────────────────────── */
 
-/* Floats over the display under the selected band, Pro-Q style */
+/* A strip under the spectrum holding the selected band's panel, so nothing covers the spectrum */
+.band-strip {
+  height: 48px;
+  top: 10px;
+}
+
+.band-hint {
+  width: 1s;
+  top: 1s;
+  bottom: 1s;
+  child-left: 2px;
+  font-size: 10;
+  color: #ece8df73;
+}
+
+/* One compact row; every item sits on the bottom edge so the bars and buttons line up */
 .band-panel {
-  width: 440px;
-  height: auto;
+  width: 1s;
+  height: 48px;
   background-color: #2e2d2b;
   border-width: 1px;
   border-color: #ed8159;
-  child-left: 12px;
-  child-right: 12px;
-  child-top: 10px;
-  child-bottom: 12px;
-  row-between: 10px;
-}
-
-.panel-row {
-  height: 24px;
-  col-between: 10px;
-}
-
-.panel-title {
-  font-size: 12;
-  font-weight: bold;
-  color: #ed8159;
-  width: auto;
-  top: 1s;
-  bottom: 1s;
+  child-left: 10px;
+  child-right: 10px;
+  col-between: 6px;
 }
 
 param-button.panel-on {
-  width: 22px;
-  height: 22px;
+  width: 18px;
+  height: 18px;
   top: 1s;
-  bottom: 1s;
+  bottom: 9px;
   border-width: 1px;
   border-color: #ed8159;
   background-color: #00000000;
@@ -446,10 +468,29 @@ param-button.panel-on:checked {
   background-color: #ed8159;
 }
 
+.panel-title {
+  width: auto;
+  height: 22px;
+  top: 1s;
+  bottom: 7px;
+  child-top: 1s;
+  child-bottom: 1s;
+  font-size: 11;
+  font-weight: bold;
+  color: #ed8159;
+}
+
+.band-panel .segmented {
+  height: 22px;
+  width: auto;
+  top: 1s;
+  bottom: 7px;
+}
+
 segment-button.shape {
-  height: 24px;
-  child-left: 4px;
-  child-right: 4px;
+  height: 22px;
+  child-left: 2px;
+  child-right: 2px;
   border-color: #ed815973;
   color: #ed8159;
 }
@@ -460,17 +501,99 @@ segment-button.shape:checked {
 }
 
 shape-icon {
-  width: 24px;
-  height: 16px;
+  width: 22px;
+  height: 14px;
   top: 1s;
   bottom: 1s;
 }
 
-button.panel-close {
-  width: 24px;
-  height: 24px;
+.band-panel .bar-cell {
+  width: 1s;
+  height: auto;
   top: 1s;
-  bottom: 1s;
+  bottom: 7px;
+  row-between: 2px;
+}
+.band-panel .bar-name {
+  height: 11px;
+  font-size: 9;
+}
+.band-panel bar-slider {
+  height: 22px;
+}
+.band-panel .bar-value {
+  child-left: 6px;
+  font-size: 10;
+}
+.band-panel .mode-cell {
+  width: auto;
+}
+
+/* Lilac: the band's dynamics, subordinate to the main controls they scale */
+.dynamics-rule {
+  width: 1px;
+  height: 34px;
+  top: 1s;
+  bottom: 7px;
+  background-color: #d3a7dc40;
+}
+
+bar-slider.lilac {
+  color: #bd8dce;
+  border-color: #d3a7dc66;
+}
+
+segment-button.lilac {
+  height: 22px;
+  child-left: 5px;
+  child-right: 5px;
+  font-size: 9;
+  border-color: #d3a7dc66;
+  color: #bd8dce;
+}
+segment-button.lilac:checked {
+  background-color: #d3a7dc;
+  border-color: #d3a7dc;
+  color: #2e2d2b;
+}
+
+.panel-note {
+  width: 1s;
+  height: 22px;
+  top: 1s;
+  bottom: 7px;
+  child-top: 1s;
+  child-bottom: 1s;
+  font-size: 10;
+  color: #ece8df8c;
+}
+
+/* Soloing is live state, so it is amber */
+button.panel-solo {
+  height: 22px;
+  width: auto;
+  top: 1s;
+  bottom: 7px;
+  child-left: 7px;
+  child-right: 7px;
+  child-top: 1s;
+  child-bottom: 1s;
+  border-width: 1px;
+  border-color: #d9a329;
+  background-color: #00000000;
+  color: #d9a329;
+  font-size: 9;
+}
+button.panel-solo:checked {
+  background-color: #d9a329;
+  color: #201f1e;
+}
+
+button.panel-close {
+  width: 22px;
+  height: 22px;
+  top: 1s;
+  bottom: 7px;
   child-space: 1s;
   border-width: 1px;
   border-color: #ece8df47;
@@ -481,93 +604,7 @@ button.panel-close:hover {
   border-color: #ece8df8c;
 }
 
-/* Soloing is live state, so it is amber */
-button.panel-solo {
-  height: 24px;
-  width: auto;
-  top: 1s;
-  bottom: 1s;
-  child-left: 8px;
-  child-right: 8px;
-  child-top: 1s;
-  child-bottom: 1s;
-  border-width: 1px;
-  border-color: #d9a329;
-  background-color: #00000000;
-  color: #d9a329;
-  font-size: 10;
-}
-button.panel-solo:checked {
-  background-color: #d9a329;
-  color: #201f1e;
-}
-
-.panel-note {
-  font-size: 10;
-  color: #ece8df8c;
-  height: auto;
-  text-wrap: true;
-}
-
-.trims {
-  height: auto;
-  row-between: 8px;
-}
-
-.trims-heading {
-  height: 13px;
-  col-between: 8px;
-}
-
-.trims-title {
-  font-size: 10;
-  color: #bd8dce;
-  width: auto;
-}
-
-.trim-rule {
-  height: 1px;
-  width: 1s;
-  top: 1s;
-  bottom: 1s;
-  background-color: #d3a7dc40;
-}
-
-/* Lilac: trims subordinate to the global controls they scale */
-bar-slider.lilac {
-  height: 22px;
-  color: #bd8dce;
-  border-color: #d3a7dc66;
-}
-.band-panel .bar-value {
-  font-size: 11;
-}
-
-segment-button.lilac {
-  height: 22px;
-  child-left: 5px;
-  child-right: 5px;
-  font-size: 10;
-  border-color: #d3a7dc66;
-  color: #bd8dce;
-}
-segment-button.lilac:checked {
-  background-color: #d3a7dc;
-  border-color: #d3a7dc;
-  color: #2e2d2b;
-}
-
 /* ── bars ──────────────────────────────────────────────────────────── */
-
-.banks {
-  col-between: 20px;
-  height: auto;
-}
-
-.bars {
-  col-between: 10px;
-  height: auto;
-}
 
 .bar-cell {
   height: auto;

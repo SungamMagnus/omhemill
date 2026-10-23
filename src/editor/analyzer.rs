@@ -103,8 +103,6 @@ pub struct Analyzer {
     scrolled_lines: f32,
     /// Lazily registered with the canvas the first time we draw text on it.
     font: Cell<Option<vg::FontId>>,
-    /// Written on every draw, so the band panel can be centred under its band.
-    display_width: Arc<AtomicF32>,
 }
 
 impl Analyzer {
@@ -149,7 +147,6 @@ impl Analyzer {
             hover: None,
             scrolled_lines: 0.0,
             font: Cell::new(None),
-            display_width: Data::display_width.get(cx),
         }
         .build(
             cx,
@@ -446,8 +443,6 @@ impl View for Analyzer {
         }
 
         let selected = Data::selected_band.get(cx);
-        self.display_width
-            .store(bounds.w / cx.scale_factor(), Ordering::Relaxed);
 
         {
             // The analyzer data is pulled directly from the spectral `CompressorBank`
