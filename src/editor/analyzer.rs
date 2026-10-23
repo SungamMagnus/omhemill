@@ -19,16 +19,21 @@ use nih_plug::nih_debug_assert;
 use nih_plug_vizia::vizia::prelude::*;
 use nih_plug_vizia::vizia::vg;
 use nih_plug_vizia::widgets::param_base::ParamWidgetBase;
+use nih_plug_vizia::widgets::util::ModifiersExt;
 use std::cell::Cell;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use crate::analyzer::AnalyzerData;
-use crate::curve::{Curve, NUM_NODES};
+use crate::curve::{Curve, NUM_BANDS};
 use crate::OmhemillParams;
 
-/// The threshold curve is the thing you are actually shaping, so it is drawn in full ink.
-const THRESHOLD_CURVE_COLOR: vg::Color = vg::Color::rgbaf(0.925, 0.910, 0.875, 1.0);
+/// The sensitivity line is the thing you are actually shaping, so it is drawn in full ink.
+const SENSITIVITY_LINE_COLOR: vg::Color = vg::Color::rgbaf(0.925, 0.910, 0.875, 1.0);
+/// The sensitivity line has its own scale, centred on the display like an EQ's gain axis: this
+/// many decibels of sensitivity reach [`SENSITIVITY_HALF_HEIGHT`] of the way to the edge.
+const SENSITIVITY_RANGE_DB: f32 = 18.0;
+const SENSITIVITY_HALF_HEIGHT: f32 = 0.45;
 /// Band handles are coral, the colour of detection.
 const NODE_COLOR: vg::Color = vg::Color::rgbaf(0.929, 0.506, 0.349, 1.0);
 const NODE_DISABLED_COLOR: vg::Color = vg::Color::rgbaf(0.925, 0.910, 0.875, 0.38);
@@ -49,28 +54,28 @@ const LN_FREQ_RANGE: f32 = LN_FREQ_RANGE_END_HZ - LN_FREQ_RANGE_START_HZ;
 /// The gain change overlay. Amber is reserved for live state: this is the brake working right now.
 const GR_BAR_OVERLAY_COLOR: vg::Color = vg::Color::rgbaf(0.851, 0.639, 0.161, 0.72);
 
-/// The upwards compression threshold curve, drawn as a fainter ink so the two curves read apart.
-const UPWARDS_THRESHOLD_CURVE_COLOR: vg::Color = vg::Color::rgbaf(0.925, 0.910, 0.875, 0.45);
-
 /// A very analyzer showing the envelope followers as a magnitude spectrum with an overlay for the
 /// gain reduction.
-/// The parameter handles for a single draggable node, so the analyzer can move it around while
+/// The parameter handles for a single draggable band, so the analyzer can move it around while
 /// still producing proper automation gestures.
-struct NodeHandles {
+struct BandHandles {
     enabled: ParamWidgetBase,
     frequency: ParamWidgetBase,
-    depth_db: ParamWidgetBase,
+    sensitivity_db: ParamWidgetBase,
+    width: ParamWidgetBase,
 }
 
 pub struct Analyzer {
     analyzer_data: Arc<Mutex<triple_buffer::Output<AnalyzerData>>>,
     sample_rate: Arc<AtomicF32>,
-    /// Read during drawing to place the node handles.
+    /// Read during drawing to place the band handles.
     params: Arc<OmhemillParams>,
-    /// Used to actually move a node when it gets dragged.
-    nodes: Vec<NodeHandles>,
-    /// The node currently being dragged, if any.
-    dragged_node: Option<usize>,
+    /// Used to actually move a band when it gets dragged.
+    bands: Vec<BandHandles>,
+    /// The band currently being dragged, if any.
+    dragged_band: Option<usize>,
+    /// Scroll wheel movement that has not yet added up to a whole step.
+    scrolled_lines: f32,
     /// Lazily registered with the canvas the first time we draw text on it.
     font: Cell<Option<vg::FontId>>,
 }
@@ -88,16 +93,19 @@ impl Analyzer {
         LRate: Lens<Target = Arc<AtomicF32>>,
         LParams: Lens<Target = Arc<OmhemillParams>> + Clone,
     {
-        let nodes = (0..NUM_NODES)
-            .map(|idx| NodeHandles {
+        let bands = (0..NUM_BANDS)
+            .map(|idx| BandHandles {
                 enabled: ParamWidgetBase::new(cx, params.clone(), move |p| {
-                    &p.threshold.nodes[idx].enabled
+                    &p.threshold.bands[idx].enabled
                 }),
                 frequency: ParamWidgetBase::new(cx, params.clone(), move |p| {
-                    &p.threshold.nodes[idx].frequency
+                    &p.threshold.bands[idx].frequency
                 }),
-                depth_db: ParamWidgetBase::new(cx, params.clone(), move |p| {
-                    &p.threshold.nodes[idx].depth_db
+                sensitivity_db: ParamWidgetBase::new(cx, params.clone(), move |p| {
+                    &p.threshold.bands[idx].sensitivity_db
+                }),
+                width: ParamWidgetBase::new(cx, params.clone(), move |p| {
+                    &p.threshold.bands[idx].width
                 }),
             })
             .collect();
@@ -106,8 +114,9 @@ impl Analyzer {
             analyzer_data: analyzer_data.get(cx),
             sample_rate: sample_rate.get(cx),
             params: params.get(cx),
-            nodes,
-            dragged_node: None,
+            bands,
+            dragged_band: None,
+            scrolled_lines: 0.0,
             font: Cell::new(None),
         }
         .build(
@@ -127,32 +136,56 @@ impl Analyzer {
         (LN_FREQ_RANGE_START_HZ + (LN_FREQ_RANGE * t)).exp()
     }
 
-    /// Where each node handle sits, in physical coordinates, along with whether it is enabled.
-    fn node_positions(&self, bounds: BoundingBox) -> Vec<(f32, f32, bool)> {
+    /// Where each band handle sits, in physical coordinates, along with whether it is enabled
+    /// and whether it is a cut.
+    fn band_positions(&self, bounds: BoundingBox) -> Vec<(f32, f32, bool, bool)> {
         let threshold = &self.params.threshold;
         let curve_params = threshold.curve_params();
         let curve = Curve::new(&curve_params);
 
-        (0..NUM_NODES)
+        (0..NUM_BANDS)
             .map(|idx| {
-                let node = &threshold.nodes[idx];
-                let freq = node.frequency.value();
+                let band = &threshold.bands[idx];
+                let freq = band.frequency.value();
+                let is_cut = band.shape.value().is_cut();
                 let x = bounds.x + bounds.w * Self::freq_to_t(freq).clamp(0.0, 1.0);
-                let y_t = db_to_unclamped_t(curve.evaluate_linear(freq));
-                let y = bounds.y + bounds.h * (1.0 - y_t);
+                // A cut has no sensitivity of its own, so it sits on the zero line
+                let sensitivity_db = if is_cut {
+                    0.0
+                } else {
+                    curve.sensitivity_ln(freq.ln())
+                };
+                let y = sensitivity_to_y(bounds, sensitivity_db);
 
-                (x, y, node.enabled.value())
+                (x, y, band.enabled.value(), is_cut)
             })
             .collect()
     }
 
-    /// The threshold curve at `freq` with `skip_idx`'s own dent taken out, so a drag can be
-    /// translated back into a depth for that node.
-    fn curve_without_node(&self, freq: f32, skip_idx: usize) -> f32 {
-        let mut curve_params = self.params.threshold.curve_params();
-        curve_params.nodes[skip_idx].enabled = false;
+    /// The band under the pointer, if any.
+    fn band_at(&self, bounds: BoundingBox, mouse_x: f32, mouse_y: f32, scale: f32) -> Option<usize> {
+        let grab_radius = NODE_RADIUS * scale * 1.6;
 
-        Curve::new(&curve_params).evaluate_linear(freq)
+        self.band_positions(bounds)
+            .into_iter()
+            .enumerate()
+            .map(|(idx, (x, y, _, _))| {
+                let dx = x - mouse_x;
+                let dy = y - mouse_y;
+                (idx, (dx * dx) + (dy * dy))
+            })
+            .filter(|(_, distance_sq)| *distance_sq <= grab_radius * grab_radius)
+            .min_by(|(_, a), (_, b)| a.total_cmp(b))
+            .map(|(idx, _)| idx)
+    }
+
+    /// The other bands' summed sensitivity at `freq`, with `skip_idx` taken out, so a drag can be
+    /// translated back into a sensitivity for that band.
+    fn sensitivity_without_band(&self, freq: f32, skip_idx: usize) -> f32 {
+        let mut curve_params = self.params.threshold.curve_params();
+        curve_params.bands[skip_idx].enabled = false;
+
+        Curve::new(&curve_params).sensitivity_ln(freq.ln())
     }
 }
 
@@ -167,69 +200,46 @@ impl View for Analyzer {
         event.map(|window_event, meta| match window_event {
             WindowEvent::MouseDown(MouseButton::Left) => {
                 let (mouse_x, mouse_y) = (cx.mouse().cursorx, cx.mouse().cursory);
-                let scale = cx.scale_factor();
-                let grab_radius = NODE_RADIUS * scale * 1.6;
+                if let Some(idx) = self.band_at(bounds, mouse_x, mouse_y, cx.scale_factor()) {
+                    let band = &self.bands[idx];
 
-                // Grab whichever handle is closest to the pointer, if any is close enough
-                let hit = self
-                    .node_positions(bounds)
-                    .into_iter()
-                    .enumerate()
-                    .map(|(idx, (x, y, _))| {
-                        let dx = x - mouse_x;
-                        let dy = y - mouse_y;
-                        (idx, (dx * dx) + (dy * dy))
-                    })
-                    .filter(|(_, distance_sq)| *distance_sq <= grab_radius * grab_radius)
-                    .min_by(|(_, a), (_, b)| a.total_cmp(b))
-                    .map(|(idx, _)| idx);
-
-                if let Some(idx) = hit {
-                    let node = &self.nodes[idx];
-
-                    // Dragging a disabled node switches it on, which is what you meant by
+                    // Dragging a disabled band switches it on, which is what you meant by
                     // grabbing it
-                    if self.params.threshold.nodes[idx].enabled.value() {
-                        self.dragged_node = Some(idx);
+                    if self.params.threshold.bands[idx].enabled.value() {
+                        self.dragged_band = Some(idx);
                         cx.capture();
                         cx.set_active(true);
 
-                        node.frequency.begin_set_parameter(cx);
-                        node.depth_db.begin_set_parameter(cx);
+                        band.frequency.begin_set_parameter(cx);
+                        band.sensitivity_db.begin_set_parameter(cx);
                     } else {
-                        node.enabled.begin_set_parameter(cx);
-                        node.enabled.set_normalized_value(cx, 1.0);
-                        node.enabled.end_set_parameter(cx);
+                        band.enabled.begin_set_parameter(cx);
+                        band.enabled.set_normalized_value(cx, 1.0);
+                        band.enabled.end_set_parameter(cx);
                     }
 
                     meta.consume();
                 }
             }
             WindowEvent::MouseDoubleClick(MouseButton::Left) => {
-                // A double click toggles the node under the pointer back off again
+                // A double click switches the band under the pointer back off again
                 let (mouse_x, mouse_y) = (cx.mouse().cursorx, cx.mouse().cursory);
-                let scale = cx.scale_factor();
-                let grab_radius = NODE_RADIUS * scale * 1.6;
-
-                for (idx, (x, y, enabled)) in self.node_positions(bounds).into_iter().enumerate() {
-                    let dx = x - mouse_x;
-                    let dy = y - mouse_y;
-                    if (dx * dx) + (dy * dy) <= grab_radius * grab_radius && enabled {
-                        let node = &self.nodes[idx];
-                        node.enabled.begin_set_parameter(cx);
-                        node.enabled.set_normalized_value(cx, 0.0);
-                        node.enabled.end_set_parameter(cx);
+                if let Some(idx) = self.band_at(bounds, mouse_x, mouse_y, cx.scale_factor()) {
+                    if self.params.threshold.bands[idx].enabled.value() {
+                        let band = &self.bands[idx];
+                        band.enabled.begin_set_parameter(cx);
+                        band.enabled.set_normalized_value(cx, 0.0);
+                        band.enabled.end_set_parameter(cx);
 
                         meta.consume();
-                        break;
                     }
                 }
             }
             WindowEvent::MouseUp(MouseButton::Left) => {
-                if let Some(idx) = self.dragged_node.take() {
-                    let node = &self.nodes[idx];
-                    node.frequency.end_set_parameter(cx);
-                    node.depth_db.end_set_parameter(cx);
+                if let Some(idx) = self.dragged_band.take() {
+                    let band = &self.bands[idx];
+                    band.frequency.end_set_parameter(cx);
+                    band.sensitivity_db.end_set_parameter(cx);
 
                     cx.release();
                     cx.set_active(false);
@@ -238,7 +248,7 @@ impl View for Analyzer {
                 }
             }
             WindowEvent::MouseMove(x, y) => {
-                if let Some(idx) = self.dragged_node {
+                if let Some(idx) = self.dragged_band {
                     if bounds.w <= 0.0 || bounds.h <= 0.0 {
                         return;
                     }
@@ -246,18 +256,50 @@ impl View for Analyzer {
                     // Horizontally the pointer picks the frequency directly
                     let t = ((*x - bounds.x) / bounds.w).clamp(0.0, 1.0);
                     let freq = Self::t_to_freq(t);
+                    let band = &self.bands[idx];
+                    band.frequency
+                        .set_normalized_value(cx, band.frequency.preview_normalized(freq));
 
-                    // Vertically it says where the threshold should end up, which becomes a depth
-                    // relative to what the rest of the curve does at this frequency
-                    let y_t = 1.0 - ((*y - bounds.y) / bounds.h).clamp(0.0, 1.0);
-                    let target_db = (y_t * 100.0) - 80.0;
-                    let depth_db = self.curve_without_node(freq, idx) - target_db;
+                    // Vertically it says where the sensitivity line should end up, minus what the
+                    // other bands already add there. A cut has no sensitivity, so it only moves
+                    // sideways.
+                    if !self.params.threshold.bands[idx].shape.value().is_cut() {
+                        let target_db = y_to_sensitivity(bounds, *y);
+                        let sensitivity_db = target_db - self.sensitivity_without_band(freq, idx);
+                        band.sensitivity_db.set_normalized_value(
+                            cx,
+                            band.sensitivity_db.preview_normalized(sensitivity_db),
+                        );
+                    }
+                }
+            }
+            WindowEvent::MouseScroll(_scroll_x, scroll_y) => {
+                // Scrolling over a band changes its width
+                let (mouse_x, mouse_y) = (cx.mouse().cursorx, cx.mouse().cursory);
+                let hovered = self
+                    .dragged_band
+                    .or_else(|| self.band_at(bounds, mouse_x, mouse_y, cx.scale_factor()));
+                if let Some(idx) = hovered {
+                    self.scrolled_lines += scroll_y;
+                    if self.scrolled_lines.abs() >= 1.0 {
+                        let width = &self.bands[idx].width;
+                        let use_finer_steps = cx.modifiers().shift();
+                        let mut value = width.unmodulated_normalized_value();
+                        while self.scrolled_lines >= 1.0 {
+                            value = width.next_normalized_step(value, use_finer_steps);
+                            self.scrolled_lines -= 1.0;
+                        }
+                        while self.scrolled_lines <= -1.0 {
+                            value = width.previous_normalized_step(value, use_finer_steps);
+                            self.scrolled_lines += 1.0;
+                        }
 
-                    let node = &self.nodes[idx];
-                    node.frequency
-                        .set_normalized_value(cx, node.frequency.preview_normalized(freq));
-                    node.depth_db
-                        .set_normalized_value(cx, node.depth_db.preview_normalized(depth_db));
+                        width.begin_set_parameter(cx);
+                        width.set_normalized_value(cx, value);
+                        width.end_set_parameter(cx);
+                    }
+
+                    meta.consume();
                 }
             }
             _ => {}
@@ -278,8 +320,8 @@ impl View for Analyzer {
         self.draw_grid(cx, canvas);
         draw_spectrum(cx, canvas, analyzer_data, nyquist);
         draw_gain_reduction(cx, canvas, analyzer_data, nyquist);
-        draw_threshold_curve(cx, canvas, analyzer_data);
-        self.draw_nodes(cx, canvas);
+        self.draw_sensitivity_line(cx, canvas);
+        self.draw_bands(cx, canvas);
         self.draw_legend(cx, canvas);
 
         // Draw the border last
@@ -385,16 +427,100 @@ impl Analyzer {
                 let mut paint = vg::Paint::color(label_color);
                 paint.set_font(&[font]);
                 paint.set_font_size(10.0 * scale);
-                paint.set_text_align(vg::Align::Left);
+                paint.set_text_align(vg::Align::Right);
                 paint.set_text_baseline(vg::Baseline::Middle);
                 let _ = canvas.fill_text(
-                    bounds.x + (5.0 * scale),
+                    bounds.x + bounds.w - (6.0 * scale),
                     y,
-                    format!("{db:.0}"),
+                    format!("{db:.0} dB"),
                     &paint,
                 );
             }
         }
+
+        // The sensitivity scale on the left, and its zero line dashed across the display
+        let mut zero_line = vg::Path::new();
+        let zero_y = sensitivity_to_y(bounds, 0.0).round() + 0.5;
+        let (dash, gap) = (3.0 * scale, 4.0 * scale);
+        let mut x = bounds.x;
+        while x < bounds.x + bounds.w {
+            zero_line.move_to(x, zero_y);
+            zero_line.line_to((x + dash).min(bounds.x + bounds.w), zero_y);
+            x += dash + gap;
+        }
+        canvas.stroke_path(
+            &zero_line,
+            &vg::Paint::color(vg::Color::rgbaf(ink.r, ink.g, ink.b, 0.22)).with_line_width(scale),
+        );
+
+        if let Some(font) = font {
+            for sensitivity_db in [12.0f32, 0.0, -12.0] {
+                let mut paint = vg::Paint::color(label_color);
+                paint.set_font(&[font]);
+                paint.set_font_size(10.0 * scale);
+                paint.set_text_align(vg::Align::Left);
+                paint.set_text_baseline(vg::Baseline::Middle);
+                let label = if sensitivity_db > 0.0 {
+                    format!("+{sensitivity_db:.0}")
+                } else {
+                    format!("{sensitivity_db:.0}")
+                };
+                let _ = canvas.fill_text(
+                    bounds.x + (6.0 * scale),
+                    sensitivity_to_y(bounds, sensitivity_db),
+                    label,
+                    &paint,
+                );
+            }
+        }
+    }
+
+    /// The sensitivity line: flat at zero until a band bends it, like an EQ's response curve.
+    /// Where the cuts (or a band set to Off) fence the brake off, the stage is dimmed and the line
+    /// drops out. This reads the parameters directly so it follows a drag without waiting for the
+    /// audio thread.
+    fn draw_sensitivity_line(&self, cx: &mut DrawContext, canvas: &mut Canvas) {
+        let bounds = cx.bounds();
+        let scale = cx.scale_factor();
+        let curve_params = self.params.threshold.curve_params();
+        let curve = Curve::new(&curve_params);
+
+        let num_points = 200.min(bounds.w.ceil() as usize).max(2);
+        let mut line = vg::Path::new();
+        let mut fenced = vg::Path::new();
+        let mut pen_down = false;
+        let step_w = bounds.w / (num_points - 1) as f32;
+        for i in 0..num_points {
+            let x_t = i as f32 / (num_points - 1) as f32;
+            let ln_freq = LN_FREQ_RANGE_START_HZ + (LN_FREQ_RANGE * x_t);
+            let x = bounds.x + (bounds.w * x_t);
+
+            let shape = curve.shape_ln(ln_freq);
+            if shape.down_weight.max(shape.up_weight) < 0.5 {
+                fenced.rect(x - step_w / 2.0, bounds.y, step_w, bounds.h);
+                pen_down = false;
+                continue;
+            }
+
+            let y = sensitivity_to_y(bounds, shape.sensitivity_db);
+            if pen_down {
+                line.line_to(x, y);
+            } else {
+                line.move_to(x, y);
+                pen_down = true;
+            }
+        }
+
+        canvas.scissor(bounds.x, bounds.y, bounds.w, bounds.h);
+        canvas.fill_path(
+            &fenced,
+            &vg::Paint::color(vg::Color::rgbaf(0.0, 0.0, 0.0, 0.28)).with_anti_alias(false),
+        );
+        canvas.stroke_path(
+            &line,
+            &vg::Paint::color(SENSITIVITY_LINE_COLOR).with_line_width(2.0 * scale),
+        );
+        canvas.reset_scissor();
     }
 
     /// A key for the three things drawn on the graph, in the top right corner.
@@ -411,7 +537,7 @@ impl Analyzer {
 
         let entries = [
             ("REDUCTION", vg::Color::rgbaf(0.851, 0.639, 0.161, 1.0)),
-            ("THRESHOLD", THRESHOLD_CURVE_COLOR),
+            ("SENSITIVITY", SENSITIVITY_LINE_COLOR),
             ("SPECTRUM", spectrum_color),
         ];
 
@@ -446,9 +572,10 @@ impl Analyzer {
         }
     }
 
-    /// The numbered node handles sitting on the threshold curve, each with a drop line down to
-    /// the bottom of the graph so you can see which frequency it is parked on.
-    fn draw_nodes(&self, cx: &mut DrawContext, canvas: &mut Canvas) {
+    /// The numbered band handles sitting on the threshold curve, each with a drop line down to
+    /// the bottom of the graph so you can see which frequency it is parked on. Cuts are drawn
+    /// hollow: they fence the brake off rather than shape it.
+    fn draw_bands(&self, cx: &mut DrawContext, canvas: &mut Canvas) {
         let bounds = cx.bounds();
         let scale = cx.scale_factor();
         let radius = NODE_RADIUS * scale;
@@ -456,7 +583,7 @@ impl Analyzer {
 
         canvas.scissor(bounds.x, bounds.y, bounds.w, bounds.h);
 
-        for (idx, (x, y, enabled)) in self.node_positions(bounds).into_iter().enumerate() {
+        for (idx, (x, y, enabled, is_cut)) in self.band_positions(bounds).into_iter().enumerate() {
             let color = if enabled {
                 NODE_COLOR
             } else {
@@ -477,7 +604,8 @@ impl Analyzer {
             // Square, like every other corner in the system
             let mut handle = vg::Path::new();
             handle.rect(x - radius, y - radius, radius * 2.0, radius * 2.0);
-            if enabled {
+            let filled = enabled && !is_cut;
+            if filled {
                 canvas.fill_path(&handle, &vg::Paint::color(color));
             } else {
                 canvas.fill_path(&handle, &vg::Paint::color(STAGE_COLOR));
@@ -488,7 +616,7 @@ impl Analyzer {
             );
 
             if let Some(font) = font {
-                let text_color = if enabled { STAGE_COLOR } else { color };
+                let text_color = if filled { STAGE_COLOR } else { color };
 
                 let mut paint = vg::Paint::color(text_color);
                 paint.set_font(&[font]);
@@ -630,53 +758,16 @@ fn draw_spectrum(
     canvas.fill_path(&mesh_path, &mesh_paint);
 }
 
-/// Overlays the threshold curve over the spectrum analyzer. If either the upwards or downwards
-/// threshold offsets are non-zero then two curves are drawn.
-fn draw_threshold_curve(cx: &mut DrawContext, canvas: &mut Canvas, analyzer_data: &AnalyzerData) {
-    let bounds = cx.bounds();
+/// Where a sensitivity value sits vertically within `bounds`.
+fn sensitivity_to_y(bounds: BoundingBox, sensitivity_db: f32) -> f32 {
+    let t = (sensitivity_db / SENSITIVITY_RANGE_DB).clamp(-1.0, 1.0) * SENSITIVITY_HALF_HEIGHT;
+    bounds.y + bounds.h * (0.5 - t)
+}
 
-    let line_width = cx.scale_factor() * 2.0;
-    let downwards_paint = vg::Paint::color(THRESHOLD_CURVE_COLOR).with_line_width(line_width);
-    let upwards_paint = vg::Paint::color(UPWARDS_THRESHOLD_CURVE_COLOR).with_line_width(line_width);
-
-    // This can be done slightly cleverer but for our purposes drawing line segments that are either
-    // 1 pixel apart or that split the curve up into 100 segments (whichever results in the least
-    // amount of line segments) should be sufficient
-    let curve = Curve::new(&analyzer_data.curve_params);
-    let num_points = 100.min(bounds.w.ceil() as usize);
-
-    let mut draw_with_offset = |offset_db: f32, paint: vg::Paint| {
-        let mut path = vg::Path::new();
-        for i in 0..num_points {
-            let x_t = i as f32 / (num_points - 1) as f32;
-            let ln_freq = LN_FREQ_RANGE_START_HZ + (LN_FREQ_RANGE * x_t);
-
-            // Evaluating the curve results in a value in dB, which must then be mapped to the same
-            // scale used in `draw_spectrum()`
-            let y_db = curve.evaluate_ln(ln_freq) + offset_db;
-            let y_t = db_to_unclamped_t(y_db);
-
-            let physical_x_pos = bounds.x + (bounds.w * x_t);
-            // This value increases from bottom to top
-            let physical_y_pos = bounds.y + (bounds.h * (1.0 - y_t));
-
-            if i == 0 {
-                path.move_to(physical_x_pos, physical_y_pos);
-            } else {
-                path.line_to(physical_x_pos, physical_y_pos);
-            }
-        }
-
-        // This does a way better job at cutting off the tops and bottoms of the graph than we could do
-        // by hand
-        canvas.scissor(bounds.x, bounds.y, bounds.w, bounds.h);
-        canvas.stroke_path(&path, &paint);
-        canvas.reset_scissor();
-    };
-
-    let (upwards_offset_db, downwards_offset_db) = analyzer_data.curve_offsets_db;
-    draw_with_offset(upwards_offset_db, upwards_paint);
-    draw_with_offset(downwards_offset_db, downwards_paint);
+/// The inverse of [`sensitivity_to_y()`].
+fn y_to_sensitivity(bounds: BoundingBox, y: f32) -> f32 {
+    let t = 0.5 - ((y - bounds.y) / bounds.h);
+    (t / SENSITIVITY_HALF_HEIGHT) * SENSITIVITY_RANGE_DB
 }
 
 /// Overlays the gain reduction display over the spectrum analyzer.

@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use self::analyzer::Analyzer;
 use self::controls::{labeled_bar, segmented, BarSlider};
 use crate::analyzer::AnalyzerData;
-use crate::curve::NUM_NODES;
+use crate::curve::{BandShape, NUM_BANDS};
 use crate::OmhemillParams;
 
 mod analyzer;
@@ -106,7 +106,7 @@ fn frame<'a>(
     .class(accent)
 }
 
-/// The wordmark, then what the brake listens to, then the STFT settings on the right.
+/// The wordmark, what the brake does and what it listens to, then the STFT settings on the right.
 fn header(cx: &mut Context) {
     HStack::new(cx, |cx| {
         HStack::new(cx, |cx| {
@@ -115,6 +115,18 @@ fn header(cx: &mut Context) {
             }
         })
         .class("wordmark");
+
+        VStack::new(cx, |cx| {
+            Label::new(cx, "ACTION").class("cap");
+            segmented(
+                cx,
+                Data::params,
+                |p| &p.threshold.action,
+                &["SUPPRESS", "LIFT", "BOTH"],
+                "coral",
+            );
+        })
+        .class("field");
 
         VStack::new(cx, |cx| {
             Label::new(cx, "LISTEN TO").class("cap");
@@ -169,43 +181,42 @@ fn bands(cx: &mut Context) {
     .height(Stretch(1.0));
 }
 
-/// One chip per band: a numbered button that switches the band on and off, plus its current
-/// frequency and depth.
+/// One chip per band: a numbered button that switches the band on and off, plus its frequency
+/// and either its sensitivity or, for a cut, which side it fences off.
 fn band_chips(cx: &mut Context) {
     HStack::new(cx, |cx| {
-        for idx in 0..NUM_NODES {
+        for idx in 0..NUM_BANDS {
             HStack::new(cx, move |cx| {
-                ParamButton::new(cx, Data::params, move |p| &p.threshold.nodes[idx].enabled)
+                ParamButton::new(cx, Data::params, move |p| &p.threshold.bands[idx].enabled)
                     .with_label(format!("{}", idx + 1).as_str())
                     .class("chip-dot");
 
                 Label::new(
                     cx,
-                    ParamWidgetBase::make_lens(
-                        Data::params,
-                        move |p| &p.threshold.nodes[idx].frequency,
-                        |param| {
-                            param.normalized_value_to_string(
-                                param.unmodulated_normalized_value(),
-                                true,
-                            )
-                        },
-                    ),
+                    Data::params.map(move |p| {
+                        let freq = p.threshold.bands[idx].frequency.value();
+                        if freq < 1_000.0 {
+                            format!("{freq:.0} Hz")
+                        } else {
+                            format!("{:.2}k", freq / 1_000.0)
+                        }
+                    }),
                 )
                 .class("chip-freq");
 
                 Label::new(
                     cx,
-                    ParamWidgetBase::make_lens(
-                        Data::params,
-                        move |p| &p.threshold.nodes[idx].depth_db,
-                        |param| {
-                            param.normalized_value_to_string(
-                                param.unmodulated_normalized_value(),
-                                true,
-                            )
-                        },
-                    ),
+                    Data::params.map(move |p| {
+                        let band = &p.threshold.bands[idx];
+                        let sensitivity_db = band.sensitivity_db.value();
+                        match band.shape.value() {
+                            BandShape::LowCut => String::from("LO CUT"),
+                            BandShape::HighCut => String::from("HI CUT"),
+                            BandShape::LowShelf => format!("LS {sensitivity_db:+.1}"),
+                            BandShape::HighShelf => format!("HS {sensitivity_db:+.1}"),
+                            BandShape::Bell => format!("{sensitivity_db:+.1} dB"),
+                        }
+                    }),
                 )
                 .class("chip-depth");
             })
@@ -234,24 +245,6 @@ fn banks(cx: &mut Context) {
                     Data::params,
                     |p| &p.compressors.downwards.knee_width_db,
                     "SELECTIVITY",
-                    "coral",
-                );
-            })
-            .class("bars");
-        })
-        .width(Stretch(3.0))
-        .height(Auto);
-
-        // Tilt, bend and center stay until the bands can do their job (shelves, wide bells)
-        frame(cx, "CURVE", "coral", |cx| {
-            HStack::new(cx, |cx| {
-                labeled_bar(cx, Data::params, |p| &p.threshold.curve_slope, "TILT", "coral");
-                labeled_bar(cx, Data::params, |p| &p.threshold.curve_curve, "BEND", "coral");
-                labeled_bar(
-                    cx,
-                    Data::params,
-                    |p| &p.threshold.center_frequency,
-                    "CENTER",
                     "coral",
                 );
             })

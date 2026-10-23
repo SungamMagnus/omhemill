@@ -20,7 +20,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::analyzer::AnalyzerData;
-use crate::curve::{Curve, CurveParams, NodeSettings, NUM_NODES};
+use crate::curve::{
+    Action, BandAction, BandSettings, BandShape, Curve, CurveParams, NUM_BANDS, RANGE_UNLIMITED_DB,
+};
 use crate::OmhemillParams;
 
 // These are the parameter name prefixes used for the downwards and upwards compression parameters.
@@ -39,17 +41,15 @@ const ENVELOPE_INIT_VALUE: f32 = std::f32::consts::FRAC_1_SQRT_2 / 8.0;
 const HIGH_FREQ_RATIO_ROLLOFF_FREQUENCY: f32 = 22_050.0;
 const HIGH_FREQ_RATIO_ROLLOFF_FREQUENCY_LN: f32 = 10.001068; // 22_050.0f32.ln()
 
-/// `(frequency, depth, enabled)` defaults for the six threshold curve nodes. These sit on the
-/// frequencies that most often need taming, but they start disabled so the plugin behaves exactly
-/// like the unmodified curve until you reach for one.
-const DEFAULT_NODES: [(f32, f32, bool); NUM_NODES] = [
-    (200.0, 5.0, false),
-    (1_200.0, 6.0, false),
-    (2_500.0, 8.0, false),
-    (3_900.0, 5.0, false),
-    (6_300.0, 5.0, false),
-    (9_200.0, 6.0, false),
+/// Where the bands sit before they are moved. They start disabled and neutral, so the plugin
+/// behaves exactly like the plain curve until you reach for one.
+const DEFAULT_BAND_FREQUENCIES: [f32; NUM_BANDS] = [
+    60.0, 150.0, 400.0, 1_000.0, 2_500.0, 5_000.0, 8_000.0, 12_000.0,
 ];
+
+/// The most a bin can ever be lifted, in decibels. Upwards compression at a high ratio would
+/// otherwise raise a near-silent bin all the way up to the curve.
+const LIFT_LIMIT_DB: f32 = 24.0;
 
 /// The length of time over which the envelope followers fade back from being instant to using the
 /// configured timingsafter the compressor bank has been reset.
@@ -75,6 +75,9 @@ pub struct CompressorBank {
     pub should_update_downwards_knee_parabolas: Arc<AtomicBool>,
     /// The same as `should_update_downwards_knee_parabolas`, but for upwards compression.
     pub should_update_upwards_knee_parabolas: Arc<AtomicBool>,
+    /// If set, then the per-bin band shaping below should be recomputed on the next processing
+    /// cycle. Everything that depends on it gets recomputed along with it.
+    pub should_update_bands: Arc<AtomicBool>,
 
     /// For each compressor bin, `ln(freq)` where `freq` is the frequency associated with that
     /// compressor. This is precomputed since all update functions need it.
@@ -101,6 +104,29 @@ pub struct CompressorBank {
     upwards_knee_parabola_scale: Vec<f32>,
     /// `downwards_knee_parabola_intercept`, but for the upwards compressors.
     upwards_knee_parabola_intercept: Vec<f32>,
+
+    /// The bands' summed sensitivity for each bin, in decibels. Lowers the downwards thresholds
+    /// and raises the upwards ones.
+    band_sensitivities_db: Vec<f32>,
+    /// What the global ratio is multiplied by in each bin.
+    band_sharps: Vec<f32>,
+    /// What the envelope followers' speed is multiplied by in each bin.
+    band_speeds: Vec<f32>,
+    /// The most gain change allowed in each bin, in decibels, or infinity.
+    band_ranges_db: Vec<f32>,
+    /// How much of the downwards gain change gets through in each bin, with the cuts applied.
+    band_down_weights: Vec<f32>,
+    /// The same as `band_down_weights`, for the upwards gain change.
+    band_up_weights: Vec<f32>,
+
+    /// The envelope followers' attack coefficient for each bin. Every bin can run at its own speed
+    /// because of the bands. See [`CompressorBank::update_envelope_coefficients()`].
+    attack_old_ts: Vec<f32>,
+    /// The same as `attack_old_ts`, for the release.
+    release_old_ts: Vec<f32>,
+    /// The `(attack_ms, release_ms, effective_sample_rate)` the coefficients above were computed
+    /// for, or `None` if they need to be recomputed.
+    envelope_coefficients_key: Option<(f32, f32, f32)>,
 
     /// The current envelope value for this bin, in linear space. Indexed by
     /// `[channel_idx][compressor_idx]`.
@@ -133,21 +159,10 @@ pub struct ThresholdParams {
     /// Spectral Compressor. In the polynomial below, this is the intercept.
     #[id = "tresh_global"]
     pub threshold_db: FloatParam,
-    /// The center frqeuency for the target curve when sidechaining is not enabled. The curve is a
-    /// polynomial `threshold_db + curve_slope*x + curve_curve*(x^2)` that evaluates to a decibel
-    /// value, where `x = ln(center_frequency) - ln(bin_frequency)`. In other words, this is
-    /// evaluated in the log/log domain for decibels and octaves.
-    #[id = "thresh_center_freq"]
-    pub center_frequency: FloatParam,
-    /// The slope for the curve, in the log/log domain. See the polynomial above.
-    #[id = "thresh_curve_slope"]
-    pub curve_slope: FloatParam,
-    /// The, uh, 'curve' for the curve, in the logarithmic domain. This is the third coefficient in
-    /// the quadratic polynomial and controls the parabolic behavior. Positive values turn the curve
-    /// into a v-shaped curve, while negative values attenuate everything outside of the center
-    /// frequency. See the polynomial above.
-    #[id = "thresh_curve_curve"]
-    pub curve_curve: FloatParam,
+    /// Whether the brake pulls peaks down, lifts what is buried, or both. Bands can override this
+    /// locally.
+    #[id = "action"]
+    pub action: EnumParam<Action>,
 
     /// Controls the type of threshold that should be used. Check [`ThresholdMode`] for more
     /// information.
@@ -159,23 +174,34 @@ pub struct ThresholdParams {
     #[id = "thresh_sc_link"]
     pub sc_channel_link: FloatParam,
 
-    /// Local dents on the threshold curve. These let you aim the processing at one resonance
-    /// without moving the rest of the curve.
-    #[nested(array, group = "Nodes")]
-    pub nodes: [NodeParams; NUM_NODES],
+    /// The bands shaping the curve. These let you aim the processing at one resonance, protect a
+    /// range, or fence the brake off, without moving the rest of the curve.
+    #[nested(array, group = "Bands")]
+    pub bands: [BandParams; NUM_BANDS],
 }
 
-/// One local dent on the threshold curve. See [`crate::curve::NodeSettings`].
+/// One band. See [`crate::curve::BandSettings`].
 #[derive(Params)]
-pub struct NodeParams {
-    #[id = "node_on"]
+pub struct BandParams {
+    #[id = "band_on"]
     pub enabled: BoolParam,
-    #[id = "node_freq"]
+    #[id = "band_shape"]
+    pub shape: EnumParam<BandShape>,
+    #[id = "band_freq"]
     pub frequency: FloatParam,
-    #[id = "node_depth"]
-    pub depth_db: FloatParam,
-    #[id = "node_width"]
+    /// A bell's width, a shelf's slope, or a cut's softness, in octaves.
+    #[id = "band_width"]
     pub width: FloatParam,
+    #[id = "band_sens"]
+    pub sensitivity_db: FloatParam,
+    #[id = "band_sharp"]
+    pub sharp: FloatParam,
+    #[id = "band_speed"]
+    pub speed: FloatParam,
+    #[id = "band_range"]
+    pub range_db: FloatParam,
+    #[id = "band_action"]
+    pub action: EnumParam<BandAction>,
 }
 
 /// The type of threshold to use.
@@ -255,7 +281,8 @@ impl ThresholdParams {
             should_update_downwards_knee_parabolas.store(true, Ordering::SeqCst);
             should_update_upwards_knee_parabolas.store(true, Ordering::SeqCst);
         });
-        let node_update = set_update_both_thresholds.clone();
+        let should_update_bands = compressor_bank.should_update_bands.clone();
+        let set_update_bands = Arc::new(move || should_update_bands.store(true, Ordering::SeqCst));
 
         ThresholdParams {
             threshold_db: FloatParam::new(
@@ -269,47 +296,10 @@ impl ThresholdParams {
             .with_callback(set_update_both_thresholds.clone())
             .with_unit(" dB")
             .with_step_size(0.1),
-            center_frequency: FloatParam::new(
-                "Threshold Center",
-                420.0,
-                FloatRange::Skewed {
-                    min: 20.0,
-                    max: 20_000.0,
-                    factor: FloatRange::skew_factor(-2.0),
-                },
-            )
-            .with_callback(set_update_both_thresholds.clone())
-            // This includes the unit
-            .with_value_to_string(formatters::v2s_f32_hz_then_khz(0))
-            .with_string_to_value(formatters::s2v_f32_hz_then_khz()),
-            // These are polynomial coefficients that are evaluated in the log/log domain
-            // (octaves/decibels). The global threshold is the intercept.
-            curve_slope: FloatParam::new(
-                "Threshold Slope",
-                0.0,
-                FloatRange::SymmetricalSkewed {
-                    min: -36.0,
-                    max: 36.0,
-                    factor: FloatRange::skew_factor(-2.0),
-                    center: 0.0,
-                },
-            )
-            .with_callback(set_update_both_thresholds.clone())
-            .with_unit(" dB/oct")
-            .with_step_size(0.01),
-            curve_curve: FloatParam::new(
-                "Threshold Curve",
-                0.0,
-                FloatRange::SymmetricalSkewed {
-                    min: -24.0,
-                    max: 24.0,
-                    factor: FloatRange::skew_factor(-2.0),
-                    center: 0.0,
-                },
-            )
-            .with_callback(set_update_both_thresholds.clone())
-            .with_unit(" dB/oct²")
-            .with_step_size(0.01),
+            action: EnumParam::new("Action", Action::Suppress).with_callback({
+                let set_update_bands = set_update_bands.clone();
+                Arc::new(move |_| set_update_bands())
+            }),
 
             mode: EnumParam::new("Mode", ThresholdMode::Internal)
                 // Not the most efficient way to do this, but it's a bit cleaner than the
@@ -324,62 +314,26 @@ impl ThresholdParams {
             .with_value_to_string(formatters::v2s_f32_percentage(0))
             .with_string_to_value(formatters::s2v_f32_percentage()),
 
-            nodes: DEFAULT_NODES.map(|(default_frequency, default_depth_db, default_enabled)| {
-                let update_thresholds = node_update.clone();
-                let update_thresholds_bool = node_update.clone();
-
-                NodeParams {
-                    enabled: BoolParam::new("Node On", default_enabled).with_callback(Arc::new(
-                        move |_| update_thresholds_bool(0.0),
-                    )),
-                    frequency: FloatParam::new(
-                        "Node Frequency",
-                        default_frequency,
-                        FloatRange::Skewed {
-                            min: 20.0,
-                            max: 20_000.0,
-                            factor: FloatRange::skew_factor(-2.0),
-                        },
-                    )
-                    .with_callback(update_thresholds.clone())
-                    .with_value_to_string(formatters::v2s_f32_hz_then_khz(0))
-                    .with_string_to_value(formatters::s2v_f32_hz_then_khz()),
-                    depth_db: FloatParam::new(
-                        "Node Depth",
-                        default_depth_db,
-                        FloatRange::Linear {
-                            min: 0.0,
-                            max: 30.0,
-                        },
-                    )
-                    .with_callback(update_thresholds.clone())
-                    .with_unit(" dB")
-                    .with_step_size(0.1),
-                    width: FloatParam::new(
-                        "Node Width",
-                        0.30,
-                        FloatRange::Skewed {
-                            min: 0.05,
-                            max: 1.50,
-                            factor: FloatRange::skew_factor(-1.0),
-                        },
-                    )
-                    .with_callback(update_thresholds)
-                    .with_value_to_string(formatters::v2s_f32_rounded(2)),
-                }
+            bands: DEFAULT_BAND_FREQUENCIES.map(|default_frequency| {
+                BandParams::new(default_frequency, set_update_bands.clone())
             }),
         }
     }
 
-    /// The node settings, in the plain-float form the curve evaluator wants.
-    pub fn node_settings(&self) -> [NodeSettings; NUM_NODES] {
+    /// The band settings, in the plain-float form the curve evaluator wants.
+    pub fn band_settings(&self) -> [BandSettings; NUM_BANDS] {
         std::array::from_fn(|idx| {
-            let node = &self.nodes[idx];
-            NodeSettings {
-                enabled: node.enabled.value(),
-                ln_freq: node.frequency.value().ln(),
-                depth_db: node.depth_db.value(),
-                width: node.width.value(),
+            let band = &self.bands[idx];
+            BandSettings {
+                enabled: band.enabled.value(),
+                shape: band.shape.value(),
+                ln_freq: band.frequency.value().ln(),
+                width_octaves: band.width.value(),
+                sensitivity_db: band.sensitivity_db.value(),
+                ln_sharp: band.sharp.value().ln(),
+                ln_speed: band.speed.value().ln(),
+                range_db: band.range_db.value(),
+                action: band.action.value(),
             }
         })
     }
@@ -388,20 +342,135 @@ impl ThresholdParams {
     pub fn curve_params(&self) -> CurveParams {
         CurveParams {
             intercept: self.threshold_db.value(),
-            center_frequency: self.center_frequency.value(),
-            // The cheeky 3 additional dB/octave attenuation is to match pink noise with the
-            // default settings. When using sidechaining we explicitly don't want this because
-            // the curve should be a flat offset to the sidechain input at the default settings.
+            // The cheeky 3 dB/octave attenuation is to match pink noise. When using sidechaining we
+            // explicitly don't want this because the curve should be a flat offset to the
+            // sidechain input.
             slope: match self.mode.value() {
-                ThresholdMode::Internal => self.curve_slope.value() - 3.0,
-                ThresholdMode::SidechainMatch | ThresholdMode::SidechainCompress => {
-                    self.curve_slope.value()
-                }
+                ThresholdMode::Internal => -3.0,
+                ThresholdMode::SidechainMatch | ThresholdMode::SidechainCompress => 0.0,
             },
-            curve: self.curve_curve.value(),
-            nodes: self.node_settings(),
+            action: self.action.value(),
+            bands: self.band_settings(),
         }
     }
+}
+
+impl BandParams {
+    /// A disabled, neutral band at `default_frequency`. Changing anything about it causes the
+    /// compressor bank's band shaping to be recomputed.
+    fn new(default_frequency: f32, set_update_bands: Arc<dyn Fn() + Send + Sync>) -> Self {
+        let float_callback = {
+            let set_update_bands = set_update_bands.clone();
+            Arc::new(move |_: f32| set_update_bands())
+        };
+
+        BandParams {
+            enabled: BoolParam::new("Band On", false).with_callback({
+                let set_update_bands = set_update_bands.clone();
+                Arc::new(move |_| set_update_bands())
+            }),
+            shape: EnumParam::new("Band Shape", BandShape::Bell).with_callback({
+                let set_update_bands = set_update_bands.clone();
+                Arc::new(move |_| set_update_bands())
+            }),
+            frequency: FloatParam::new(
+                "Band Frequency",
+                default_frequency,
+                FloatRange::Skewed {
+                    min: 20.0,
+                    max: 20_000.0,
+                    factor: FloatRange::skew_factor(-2.0),
+                },
+            )
+            .with_callback(float_callback.clone())
+            .with_value_to_string(formatters::v2s_f32_hz_then_khz(0))
+            .with_string_to_value(formatters::s2v_f32_hz_then_khz()),
+            width: FloatParam::new(
+                "Band Width",
+                1.0,
+                FloatRange::Skewed {
+                    min: 0.05,
+                    max: 3.0,
+                    factor: FloatRange::skew_factor(-1.0),
+                },
+            )
+            .with_callback(float_callback.clone())
+            .with_unit(" oct")
+            .with_value_to_string(formatters::v2s_f32_rounded(2)),
+            sensitivity_db: FloatParam::new(
+                "Band Sensitivity",
+                0.0,
+                FloatRange::Linear {
+                    min: -18.0,
+                    max: 18.0,
+                },
+            )
+            .with_callback(float_callback.clone())
+            .with_unit(" dB")
+            .with_step_size(0.1),
+            sharp: FloatParam::new(
+                "Band Sharp",
+                1.0,
+                FloatRange::Skewed {
+                    min: 0.25,
+                    max: 4.0,
+                    factor: FloatRange::skew_factor(-1.0),
+                },
+            )
+            .with_callback(float_callback.clone())
+            .with_value_to_string(v2s_multiplier())
+            .with_string_to_value(s2v_multiplier()),
+            speed: FloatParam::new(
+                "Band Speed",
+                1.0,
+                FloatRange::Skewed {
+                    min: 0.25,
+                    max: 4.0,
+                    factor: FloatRange::skew_factor(-1.0),
+                },
+            )
+            .with_callback(float_callback.clone())
+            .with_value_to_string(v2s_multiplier())
+            .with_string_to_value(s2v_multiplier()),
+            range_db: FloatParam::new(
+                "Band Range",
+                RANGE_UNLIMITED_DB,
+                FloatRange::Linear {
+                    min: 0.0,
+                    max: RANGE_UNLIMITED_DB,
+                },
+            )
+            .with_callback(float_callback)
+            .with_step_size(0.1)
+            .with_value_to_string(Arc::new(|value| {
+                if value >= RANGE_UNLIMITED_DB {
+                    String::from("Full")
+                } else {
+                    format!("{value:.1} dB")
+                }
+            })),
+            action: EnumParam::new("Band Action", BandAction::Auto).with_callback(Arc::new(
+                move |_| set_update_bands(),
+            )),
+        }
+    }
+}
+
+/// Formats a multiplier as `x1.40`.
+fn v2s_multiplier() -> Arc<dyn Fn(f32) -> String + Send + Sync> {
+    Arc::new(|value| format!("x{value:.2}"))
+}
+
+/// Parses a multiplier with or without the leading `x`.
+fn s2v_multiplier() -> Arc<dyn Fn(&str) -> Option<f32> + Send + Sync> {
+    Arc::new(|string| {
+        string
+            .trim()
+            .trim_start_matches(['x', 'X', '\u{d7}'])
+            .trim()
+            .parse()
+            .ok()
+    })
 }
 
 impl CompressorBankParams {
@@ -468,19 +537,29 @@ impl CompressorParams {
             .with_callback(set_update_thresholds)
             .with_unit(" dB")
             .with_step_size(0.1),
-            ratio: FloatParam::new(
-                format!("{name_prefix} Ratio"),
-                1.0,
-                FloatRange::Skewed {
-                    min: 1.0,
-                    max: 500.0,
-                    factor: FloatRange::skew_factor(-2.0),
-                },
-            )
-            .with_callback(set_update_ratios.clone())
-            .with_step_size(0.01)
-            .with_value_to_string(formatters::v2s_compression_ratio(2))
-            .with_string_to_value(formatters::s2v_compression_ratio()),
+            ratio: {
+                let ratio = FloatParam::new(
+                    format!("{name_prefix} Ratio"),
+                    1.0,
+                    FloatRange::Skewed {
+                        min: 1.0,
+                        max: 500.0,
+                        factor: FloatRange::skew_factor(-2.0),
+                    },
+                )
+                .with_callback(set_update_ratios.clone())
+                .with_step_size(0.01)
+                .with_value_to_string(formatters::v2s_compression_ratio(2))
+                .with_string_to_value(formatters::s2v_compression_ratio());
+
+                // Both directions take their ratio from Sharpness, the downwards ratio, so the
+                // upwards one no longer does anything. It stays so old sessions still load.
+                if name_prefix == UPWARDS_NAME_PREFIX {
+                    ratio.hide()
+                } else {
+                    ratio
+                }
+            },
             high_freq_ratio_rolloff: FloatParam::new(
                 format!("{name_prefix} Hi-Freq Rolloff"),
                 // TODO: Bit of a hacky way to set the default values differently for upwards and
@@ -530,6 +609,7 @@ impl CompressorBank {
             should_update_upwards_ratios: Arc::new(AtomicBool::new(true)),
             should_update_downwards_knee_parabolas: Arc::new(AtomicBool::new(true)),
             should_update_upwards_knee_parabolas: Arc::new(AtomicBool::new(true)),
+            should_update_bands: Arc::new(AtomicBool::new(true)),
 
             ln_freqs: Vec::with_capacity(complex_buffer_len),
 
@@ -542,6 +622,17 @@ impl CompressorBank {
             upwards_ratios: Vec::with_capacity(complex_buffer_len),
             upwards_knee_parabola_scale: Vec::with_capacity(complex_buffer_len),
             upwards_knee_parabola_intercept: Vec::with_capacity(complex_buffer_len),
+
+            band_sensitivities_db: Vec::with_capacity(complex_buffer_len),
+            band_sharps: Vec::with_capacity(complex_buffer_len),
+            band_speeds: Vec::with_capacity(complex_buffer_len),
+            band_ranges_db: Vec::with_capacity(complex_buffer_len),
+            band_down_weights: Vec::with_capacity(complex_buffer_len),
+            band_up_weights: Vec::with_capacity(complex_buffer_len),
+
+            attack_old_ts: Vec::with_capacity(complex_buffer_len),
+            release_old_ts: Vec::with_capacity(complex_buffer_len),
+            envelope_coefficients_key: None,
 
             envelopes: vec![Vec::with_capacity(complex_buffer_len); num_channels],
             envelope_followers_timing_scale: 0.0,
@@ -586,6 +677,19 @@ impl CompressorBank {
             complex_buffer_len.saturating_sub(self.upwards_knee_parabola_intercept.len()),
         );
 
+        for per_bin in [
+            &mut self.band_sensitivities_db,
+            &mut self.band_sharps,
+            &mut self.band_speeds,
+            &mut self.band_ranges_db,
+            &mut self.band_down_weights,
+            &mut self.band_up_weights,
+            &mut self.attack_old_ts,
+            &mut self.release_old_ts,
+        ] {
+            per_bin.reserve_exact(complex_buffer_len.saturating_sub(per_bin.len()));
+        }
+
         self.envelopes.resize_with(num_channels, Vec::new);
         for envelopes in self.envelopes.iter_mut() {
             envelopes.reserve_exact(complex_buffer_len.saturating_sub(envelopes.len()));
@@ -628,6 +732,16 @@ impl CompressorBank {
         self.upwards_knee_parabola_intercept
             .resize(complex_buffer_len, 1.0);
 
+        self.band_sensitivities_db.resize(complex_buffer_len, 0.0);
+        self.band_sharps.resize(complex_buffer_len, 1.0);
+        self.band_speeds.resize(complex_buffer_len, 1.0);
+        self.band_ranges_db.resize(complex_buffer_len, f32::INFINITY);
+        self.band_down_weights.resize(complex_buffer_len, 1.0);
+        self.band_up_weights.resize(complex_buffer_len, 0.0);
+        self.attack_old_ts.resize(complex_buffer_len, 0.0);
+        self.release_old_ts.resize(complex_buffer_len, 0.0);
+        self.envelope_coefficients_key = None;
+
         for envelopes in self.envelopes.iter_mut() {
             envelopes.resize(complex_buffer_len, ENVELOPE_INIT_VALUE);
         }
@@ -652,6 +766,7 @@ impl CompressorBank {
             .store(true, Ordering::SeqCst);
         self.should_update_upwards_knee_parabolas
             .store(true, Ordering::SeqCst);
+        self.should_update_bands.store(true, Ordering::SeqCst);
     }
 
     /// Clear out the envelope followers.
@@ -771,10 +886,10 @@ impl CompressorBank {
         self.update_sidechain_spectra(sc_buffer, channel_idx);
     }
 
-    /// Update the envelope followers based on the bin magnitudes.
-    fn update_envelopes(
+    /// Recompute the per-bin envelope follower coefficients if the timings changed. Each bin's
+    /// attack and release are the global ones divided by that bin's band speed.
+    fn update_envelope_coefficients(
         &mut self,
-        buffer: &[Complex32],
         channel_idx: usize,
         params: &OmhemillParams,
         overlap_times: usize,
@@ -797,35 +912,63 @@ impl CompressorBank {
                 (self.envelope_followers_timing_scale + delta).min(1.0);
         }
 
+        let key = (attack_ms, release_ms, effective_sample_rate);
+        if self.envelope_coefficients_key == Some(key) {
+            return;
+        }
+        self.envelope_coefficients_key = Some(key);
+
         // The coefficient the old envelope value is multiplied by when the current rectified sample
         // value is above the envelope's value. The 0 to 1 step response retains 36.8% of the old
         // value after the attack time has elapsed, and current value is 63.2% of the way towards 1.
         // The effective sample rate needs to compensate for the periodic nature of the STFT
         // operation. Since with a 2048 sample window and 4x overlap, you'd run this function once
         // for every 512 samples.
-        let attack_old_t = if attack_ms == 0.0 {
-            0.0
-        } else {
-            (-1.0 / (attack_ms / 1000.0 * effective_sample_rate)).exp()
+        let coefficient = |time_ms: f32, speed: f32| {
+            if time_ms == 0.0 {
+                0.0
+            } else {
+                (-speed / (time_ms / 1000.0 * effective_sample_rate)).exp()
+            }
         };
-        let attack_new_t = 1.0 - attack_old_t;
-        // The same as `attack_old_t`, but for the release phase of the envelope follower
-        let release_old_t = if release_ms == 0.0 {
-            0.0
-        } else {
-            (-1.0 / (release_ms / 1000.0 * effective_sample_rate)).exp()
-        };
-        let release_new_t = 1.0 - release_old_t;
+        for ((speed, attack_old_t), release_old_t) in self
+            .band_speeds
+            .iter()
+            .zip(self.attack_old_ts.iter_mut())
+            .zip(self.release_old_ts.iter_mut())
+        {
+            *attack_old_t = coefficient(attack_ms, *speed);
+            *release_old_t = coefficient(release_ms, *speed);
+        }
+    }
 
-        for (bin, envelope) in buffer.iter().zip(self.envelopes[channel_idx].iter_mut()) {
+    /// Update the envelope followers based on the bin magnitudes.
+    fn update_envelopes(
+        &mut self,
+        buffer: &[Complex32],
+        channel_idx: usize,
+        params: &OmhemillParams,
+        overlap_times: usize,
+    ) {
+        self.update_envelope_coefficients(channel_idx, params, overlap_times);
+
+        assert!(self.attack_old_ts.len() == buffer.len());
+        assert!(self.release_old_ts.len() == buffer.len());
+        for (bin_idx, (bin, envelope)) in buffer
+            .iter()
+            .zip(self.envelopes[channel_idx].iter_mut())
+            .enumerate()
+        {
             let magnitude = bin.norm();
-            if *envelope > magnitude {
+            // SAFETY: These sizes were asserted above
+            let old_t = if *envelope > magnitude {
                 // Release stage
-                *envelope = (release_old_t * *envelope) + (release_new_t * magnitude);
+                unsafe { *self.release_old_ts.get_unchecked(bin_idx) }
             } else {
                 // Attack stage
-                *envelope = (attack_old_t * *envelope) + (attack_new_t * magnitude);
-            }
+                unsafe { *self.attack_old_ts.get_unchecked(bin_idx) }
+            };
+            *envelope = (old_t * *envelope) + ((1.0 - old_t) * magnitude);
         }
     }
 
@@ -839,43 +982,16 @@ impl CompressorBank {
         params: &OmhemillParams,
         overlap_times: usize,
     ) {
-        let effective_sample_rate =
-            self.sample_rate / (self.window_size as f32 / overlap_times as f32);
-
-        // The timings are scaled by `self.envelope_followers_timing_scale` to allow the envelope
-        // followers to settle in quicker after a reset
-        let attack_ms =
-            params.global.compressor_attack_ms.value() * self.envelope_followers_timing_scale;
-        let release_ms =
-            params.global.compressor_release_ms.value() * self.envelope_followers_timing_scale;
-
-        // This needs to gradually fade from 0.0 back to 1.0 after a reset
-        if self.envelope_followers_timing_scale < 1.0 && channel_idx == self.envelopes.len() - 1 {
-            let delta =
-                ((ENVELOPE_FOLLOWER_TIMING_FADE_MS / 1000.0) * effective_sample_rate).recip();
-            self.envelope_followers_timing_scale =
-                (self.envelope_followers_timing_scale + delta).min(1.0);
-        }
-
-        // See `update_envelopes()`
-        let attack_old_t = if attack_ms == 0.0 {
-            0.0
-        } else {
-            (-1.0 / (attack_ms / 1000.0 * effective_sample_rate)).exp()
-        };
-        let attack_new_t = 1.0 - attack_old_t;
-        let release_old_t = if release_ms == 0.0 {
-            0.0
-        } else {
-            (-1.0 / (release_ms / 1000.0 * effective_sample_rate)).exp()
-        };
-        let release_new_t = 1.0 - release_old_t;
+        self.update_envelope_coefficients(channel_idx, params, overlap_times);
 
         // For the channel linking
         let num_channels = self.sidechain_spectrum_magnitudes.len() as f32;
         let other_channels_t = params.threshold.sc_channel_link.value() / num_channels;
         let this_channel_t = 1.0 - (other_channels_t * (num_channels - 1.0));
 
+        let num_bins = self.envelopes[channel_idx].len();
+        assert!(self.attack_old_ts.len() == num_bins);
+        assert!(self.release_old_ts.len() == num_bins);
         for (bin_idx, envelope) in self.envelopes[channel_idx].iter_mut().enumerate() {
             // In this mode the envelopes are set based on the sidechain signal, taking channel
             // linking into account
@@ -894,13 +1010,15 @@ impl CompressorBank {
                 })
                 .sum::<f32>();
 
-            if *envelope > sidechain_magnitude {
+            // SAFETY: These sizes were asserted above
+            let old_t = if *envelope > sidechain_magnitude {
                 // Release stage
-                *envelope = (release_old_t * *envelope) + (release_new_t * sidechain_magnitude);
+                unsafe { *self.release_old_ts.get_unchecked(bin_idx) }
             } else {
                 // Attack stage
-                *envelope = (attack_old_t * *envelope) + (attack_new_t * sidechain_magnitude);
-            }
+                unsafe { *self.attack_old_ts.get_unchecked(bin_idx) }
+            };
+            *envelope = (old_t * *envelope) + ((1.0 - old_t) * sidechain_magnitude);
         }
     }
 
@@ -944,6 +1062,9 @@ impl CompressorBank {
         assert!(self.downwards_knee_parabola_intercept.len() == buffer.len());
         assert!(self.upwards_thresholds_db.len() == buffer.len());
         assert!(self.upwards_ratios.len() == buffer.len());
+        assert!(self.band_up_weights.len() == buffer.len());
+        assert!(self.band_down_weights.len() == buffer.len());
+        assert!(self.band_ranges_db.len() == buffer.len());
         assert!(self.upwards_knee_parabola_scale.len() == buffer.len());
         assert!(self.upwards_knee_parabola_intercept.len() == buffer.len());
         // NOTE: In the sidechain compression mode these envelopes are computed from the sidechain
@@ -986,6 +1107,7 @@ impl CompressorBank {
                 unsafe { self.upwards_knee_parabola_intercept.get_unchecked(bin_idx) };
             let upwards_compressed = if bin_idx >= first_non_dc_bin
                 && *upwards_ratio != 1.0
+                && unsafe { *self.band_up_weights.get_unchecked(bin_idx) } > 0.0
                 && envelope_db > util::MINUS_INFINITY_DB
             {
                 compress_upwards(
@@ -1001,9 +1123,16 @@ impl CompressorBank {
             };
 
             // If the comprssed output is -10 dBFS and the envelope follower was at -6 dBFS, then we
-            // want to apply -4 dB of gain to the bin
-            let gain_difference_db =
-                downwards_compressed + upwards_compressed - (envelope_db * 2.0);
+            // want to apply -4 dB of gain to the bin. The bands decide how much of each direction
+            // gets through here, and how far it may go.
+            // SAFETY: The band arrays' sizes were asserted above
+            let gain_difference_db = band_gain_difference_db(
+                downwards_compressed - envelope_db,
+                upwards_compressed - envelope_db,
+                unsafe { *self.band_down_weights.get_unchecked(bin_idx) },
+                unsafe { *self.band_up_weights.get_unchecked(bin_idx) },
+                unsafe { *self.band_ranges_db.get_unchecked(bin_idx) },
+            );
             unsafe {
                 *analyzer_input_data
                     .gain_difference_db
@@ -1045,6 +1174,9 @@ impl CompressorBank {
         assert!(self.downwards_ratios.len() == buffer.len());
         assert!(self.upwards_thresholds_db.len() == buffer.len());
         assert!(self.upwards_ratios.len() == buffer.len());
+        assert!(self.band_up_weights.len() == buffer.len());
+        assert!(self.band_down_weights.len() == buffer.len());
+        assert!(self.band_ranges_db.len() == buffer.len());
         for (bin_idx, (bin, envelope)) in buffer
             .iter_mut()
             .zip(self.envelopes[channel_idx].iter())
@@ -1100,6 +1232,7 @@ impl CompressorBank {
             let upwards_ratio = unsafe { self.upwards_ratios.get_unchecked(bin_idx) };
             let upwards_compressed = if bin_idx >= first_non_dc_bin
                 && *upwards_ratio != 1.0
+                && unsafe { *self.band_up_weights.get_unchecked(bin_idx) } > 0.0
                 && envelope_db > util::MINUS_INFINITY_DB
             {
                 let (upwards_knee_parabola_scale, upwards_knee_parabola_intercept) =
@@ -1121,9 +1254,16 @@ impl CompressorBank {
             };
 
             // If the comprssed output is -10 dBFS and the envelope follower was at -6 dBFS, then we
-            // want to apply -4 dB of gain to the bin
-            let gain_difference_db =
-                downwards_compressed + upwards_compressed - (envelope_db * 2.0);
+            // want to apply -4 dB of gain to the bin. The bands decide how much of each direction
+            // gets through here, and how far it may go.
+            // SAFETY: The band arrays' sizes were asserted above
+            let gain_difference_db = band_gain_difference_db(
+                downwards_compressed - envelope_db,
+                upwards_compressed - envelope_db,
+                unsafe { *self.band_down_weights.get_unchecked(bin_idx) },
+                unsafe { *self.band_up_weights.get_unchecked(bin_idx) },
+                unsafe { *self.band_ranges_db.get_unchecked(bin_idx) },
+            );
             unsafe {
                 *analyzer_input_data
                     .gain_difference_db
@@ -1137,23 +1277,64 @@ impl CompressorBank {
     /// Update the compressors if needed. This is called just before processing, and the compressors
     /// are updated in accordance to the atomic flags set on this struct.
     fn update_if_needed(&mut self, params: &OmhemillParams) {
-        // The threshold curve is a polynomial in log-log (decibels-octaves) space
         let curve_params = params.threshold.curve_params();
         let curve = Curve::new(&curve_params);
+
+        // The band shaping feeds everything below, so it goes first and drags the rest along
+        if self
+            .should_update_bands
+            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+        {
+            for (bin_idx, ln_freq) in self.ln_freqs.iter().enumerate() {
+                let shape = curve.shape_ln(*ln_freq);
+                self.band_sensitivities_db[bin_idx] = shape.sensitivity_db;
+                self.band_sharps[bin_idx] = shape.sharp;
+                self.band_speeds[bin_idx] = shape.speed;
+                self.band_ranges_db[bin_idx] = shape.range_db;
+                self.band_down_weights[bin_idx] = shape.down_weight;
+                self.band_up_weights[bin_idx] = shape.up_weight;
+            }
+
+            self.envelope_coefficients_key = None;
+            for flag in [
+                &self.should_update_downwards_thresholds,
+                &self.should_update_upwards_thresholds,
+                &self.should_update_downwards_ratios,
+                &self.should_update_upwards_ratios,
+            ] {
+                flag.store(true, Ordering::SeqCst);
+            }
+        }
+
+        // Sharpness drives both directions, so a change to it must reach the upwards ratios too
+        let update_downwards_ratios = self
+            .should_update_downwards_ratios
+            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok();
+        let update_upwards_ratios = self
+            .should_update_upwards_ratios
+            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+            || update_downwards_ratios;
 
         if self
             .should_update_downwards_thresholds
             .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
+            // Sensitivity pulls the downwards thresholds down, so the brake bites harder there
             let downwards_intercept = params.compressors.downwards.threshold_offset_db.value();
-            for (ln_freq, threshold_db) in self
+            for ((ln_freq, sensitivity_db), threshold_db) in self
                 .ln_freqs
                 .iter()
+                .zip(self.band_sensitivities_db.iter())
                 .zip(self.downwards_thresholds_db.iter_mut())
             {
-                *threshold_db = curve.evaluate_ln(*ln_freq) + downwards_intercept;
+                *threshold_db = curve.base_ln(*ln_freq) - sensitivity_db + downwards_intercept;
             }
+            self.should_update_downwards_knee_parabolas
+                .store(true, Ordering::SeqCst);
         }
 
         if self
@@ -1161,53 +1342,59 @@ impl CompressorBank {
             .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
             .is_ok()
         {
+            // And it pushes the upwards thresholds up, so more gets lifted there
             let upwards_intercept = params.compressors.upwards.threshold_offset_db.value();
-            for (ln_freq, threshold_db) in self
+            for ((ln_freq, sensitivity_db), threshold_db) in self
                 .ln_freqs
                 .iter()
+                .zip(self.band_sensitivities_db.iter())
                 .zip(self.upwards_thresholds_db.iter_mut())
             {
-                *threshold_db = curve.evaluate_ln(*ln_freq) + upwards_intercept;
+                *threshold_db = curve.base_ln(*ln_freq) + sensitivity_db + upwards_intercept;
             }
+            self.should_update_upwards_knee_parabolas
+                .store(true, Ordering::SeqCst);
         }
 
-        if self
-            .should_update_downwards_ratios
-            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            // If the high-frequency rolloff is enabled then higher frequency bins will have their
-            // ratios reduced to reduce harshness. This follows the octave scale. It's easier to do
-            // this cleanly using reciprocals.
-            let target_ratio_recip = params.compressors.downwards.ratio.value().recip();
-            let downwards_high_freq_ratio_rolloff =
-                params.compressors.downwards.high_freq_ratio_rolloff.value();
-            for (ln_freq, ratio) in self.ln_freqs.iter().zip(self.downwards_ratios.iter_mut()) {
+        // Both directions take their ratio from Sharpness, the downwards ratio parameter. If the
+        // high-frequency rolloff is enabled then higher frequency bins will have their ratios
+        // reduced to reduce harshness. This follows the octave scale. It's easier to do this
+        // cleanly using reciprocals. A band's sharp multiplier then scales how far the ratio is
+        // from 1:1.
+        let target_ratio_recip = params.compressors.downwards.ratio.value().recip();
+        let compute_ratios = |ratios: &mut Vec<f32>, rolloff: f32, ln_freqs: &[f32], sharps: &[f32]| {
+            for ((ln_freq, sharp), ratio) in ln_freqs.iter().zip(sharps.iter()).zip(ratios.iter_mut())
+            {
                 let octave_fraction = ln_freq / HIGH_FREQ_RATIO_ROLLOFF_FREQUENCY_LN;
-                let rolloff_t = octave_fraction * downwards_high_freq_ratio_rolloff;
+                let rolloff_t = octave_fraction * rolloff;
 
                 // If the octave fraction times the rolloff amount is high, then this should get
                 // closer to `high_freq_ratio_rolloff` (which is in [0, 1]).
                 let ratio_recip = (target_ratio_recip * (1.0 - rolloff_t)) + rolloff_t;
-                *ratio = ratio_recip.recip();
+                *ratio = 1.0 + ((ratio_recip.recip() - 1.0) * sharp);
             }
+        };
+
+        if update_downwards_ratios {
+            compute_ratios(
+                &mut self.downwards_ratios,
+                params.compressors.downwards.high_freq_ratio_rolloff.value(),
+                &self.ln_freqs,
+                &self.band_sharps,
+            );
+            self.should_update_downwards_knee_parabolas
+                .store(true, Ordering::SeqCst);
         }
 
-        if self
-            .should_update_upwards_ratios
-            .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
-            let target_ratio_recip = params.compressors.upwards.ratio.value().recip();
-            let upwards_high_freq_ratio_rolloff =
-                params.compressors.upwards.high_freq_ratio_rolloff.value();
-            for (ln_freq, ratio) in self.ln_freqs.iter().zip(self.upwards_ratios.iter_mut()) {
-                let octave_fraction = ln_freq / HIGH_FREQ_RATIO_ROLLOFF_FREQUENCY_LN;
-                let rolloff_t = octave_fraction * upwards_high_freq_ratio_rolloff;
-
-                let ratio_recip = (target_ratio_recip * (1.0 - rolloff_t)) + rolloff_t;
-                *ratio = ratio_recip.recip();
-            }
+        if update_upwards_ratios {
+            compute_ratios(
+                &mut self.upwards_ratios,
+                params.compressors.upwards.high_freq_ratio_rolloff.value(),
+                &self.ln_freqs,
+                &self.band_sharps,
+            );
+            self.should_update_upwards_knee_parabolas
+                .store(true, Ordering::SeqCst);
         }
 
         if self
@@ -1260,6 +1447,21 @@ impl CompressorBank {
             }
         }
     }
+}
+
+/// Combine a bin's downwards and upwards gain changes the way the bands say: weighted per
+/// direction (the action and the cuts), then held within the bin's range. All values are in
+/// decibels.
+#[inline]
+fn band_gain_difference_db(
+    downwards_db: f32,
+    upwards_db: f32,
+    down_weight: f32,
+    up_weight: f32,
+    range_db: f32,
+) -> f32 {
+    let lifted_db = (upwards_db * up_weight).min(LIFT_LIMIT_DB);
+    ((downwards_db * down_weight) + lifted_db).clamp(-range_db, range_db)
 }
 
 /// Apply downwards compression to the input with the supplied parameters. All values are in
@@ -1346,4 +1548,56 @@ fn upwards_soft_knee_coefficients(threshold_db: f32, knee_width_db: f32, ratio: 
     let intercept = -threshold_db - (knee_width_db / 2.0);
 
     (scale, intercept)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_settings_leave_the_spectrum_alone() {
+        let (analyzer_input, _analyzer_output) = triple_buffer::TripleBuffer::default().split();
+        let mut bank = CompressorBank::new(analyzer_input, 2, 4096);
+        let params = OmhemillParams::new(&bank);
+
+        let buffer_config = BufferConfig {
+            sample_rate: 48_000.0,
+            min_buffer_size: None,
+            max_buffer_size: 512,
+            process_mode: ProcessMode::Realtime,
+        };
+        bank.update_capacity(2, 4096);
+        bank.resize(&buffer_config, 2048);
+        bank.reset();
+
+        let spectrum: Vec<Complex32> = (0..1025)
+            .map(|i| Complex32::new((i as f32 * 0.37).sin(), 0.2))
+            .collect();
+        let mut buffer = spectrum.clone();
+        for _ in 0..50 {
+            for channel_idx in 0..2 {
+                buffer.copy_from_slice(&spectrum);
+                bank.process(&mut buffer, channel_idx, &params, 4, 2);
+            }
+        }
+
+        for (processed, original) in buffer.iter().zip(spectrum.iter()) {
+            assert!((processed - original).norm() < 1e-4);
+        }
+    }
+
+    #[test]
+    fn band_weights_choose_the_direction() {
+        // Suppress only, lift only, and a band switched off
+        assert_eq!(band_gain_difference_db(-6.0, 4.0, 1.0, 0.0, f32::INFINITY), -6.0);
+        assert_eq!(band_gain_difference_db(-6.0, 4.0, 0.0, 1.0, f32::INFINITY), 4.0);
+        assert_eq!(band_gain_difference_db(-6.0, 4.0, 0.0, 0.0, f32::INFINITY), 0.0);
+    }
+
+    #[test]
+    fn range_and_lift_limits_hold() {
+        assert_eq!(band_gain_difference_db(-20.0, 0.0, 1.0, 0.0, 6.0), -6.0);
+        assert_eq!(band_gain_difference_db(0.0, 10.0, 0.0, 1.0, 6.0), 6.0);
+        assert_eq!(band_gain_difference_db(0.0, 60.0, 0.0, 1.0, f32::INFINITY), LIFT_LIMIT_DB);
+    }
 }
