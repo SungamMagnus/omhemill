@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex};
 use self::analyzer::Analyzer;
 use self::controls::{labeled_bar, segmented, ResolutionButton, SegmentButton, ShapeIcon};
 use crate::analyzer::AnalyzerData;
-use crate::curve::{BandShape, Curve, NUM_BANDS};
+use crate::curve::{BandShape, NUM_BANDS};
 use crate::presets::{self, Preset};
 use crate::OmhemillParams;
 
@@ -40,6 +40,55 @@ mod controls;
 /// The plugin window's size, in logical pixels. This mirrors the proportions of the design.
 const GUI_WIDTH: u32 = 1200;
 const GUI_HEIGHT: u32 = 645;
+
+/// The band panel's width, matching the stylesheet, and its distance from the display's edges.
+const PANEL_WIDTH: f32 = 440.0;
+const PANEL_MARGIN: f32 = 10.0;
+
+/// One colour per band, so you can tell which band a handle, chip or panel belongs to while
+/// adjusting it. Spaced around the hue circle at a like lightness, skipping amber, which is kept
+/// for live state (the gain reduction).
+pub(crate) const BAND_COLORS: [(u8, u8, u8); NUM_BANDS] = [
+    (0xed, 0x81, 0x59), // coral
+    (0x9b, 0xc4, 0x6a), // moss
+    (0x52, 0xb0, 0x8a), // jade
+    (0x4f, 0xb3, 0xc4), // teal
+    (0x6f, 0x8f, 0xe0), // steel
+    (0x9f, 0x7d, 0xe0), // violet
+    (0xd3, 0x8f, 0xd9), // orchid
+    (0xe0, 0x7a, 0x9a), // rose
+];
+
+/// The stylesheet class for a band's colour.
+fn band_class(idx: usize) -> String {
+    format!("band-{}", idx + 1)
+}
+
+/// The per-band colour rules, generated from [`BAND_COLORS`] so the table is the one place the
+/// colours live.
+fn band_stylesheet() -> String {
+    let mut css = String::new();
+    for (idx, (r, g, b)) in BAND_COLORS.iter().enumerate() {
+        let class = band_class(idx);
+        let color = format!("#{r:02x}{g:02x}{b:02x}");
+        css.push_str(&format!(
+            "
+.chip.{class} {{ border-color: {color}59; }}
+.chip.{class}.selected {{ border-color: {color}; background-color: {color}24; }}
+param-button.chip-dot.{class}:hover {{ border-color: {color}; background-color: {color}24; }}
+param-button.chip-dot.{class}:checked {{ border-color: {color}; background-color: {color}; color: #201f1e; }}
+.band-panel.{class} {{ border-color: {color}; }}
+.panel-title.{class} {{ color: {color}; }}
+param-button.panel-on.{class} {{ border-color: {color}; }}
+param-button.panel-on.{class}:checked {{ background-color: {color}; }}
+segment-button.shape.{class} {{ border-color: {color}73; color: {color}; }}
+segment-button.shape.{class}:checked {{ border-color: {color}; background-color: {color}; color: #201f1e; }}
+bar-slider.{class} {{ color: {color}; }}
+"
+        ));
+    }
+    css
+}
 
 /// Kept so existing saved state still loads. The editor no longer has a collapsed mode — the
 /// display is always shown, as in the design.
@@ -61,6 +110,11 @@ pub struct Data {
     pub(crate) sample_rate: Arc<AtomicF32>,
     /// The band whose panel is open, if any. Shared by the display and the chips.
     pub(crate) selected_band: Option<usize>,
+    /// Counts selections, including re-selecting the same band, so the band panel is placed
+    /// afresh each time a band is clicked and at no other time.
+    pub(crate) selection_serial: u32,
+    /// The display's width in logical pixels as last drawn, for placing the band panel.
+    pub(crate) display_width: Arc<AtomicF32>,
     /// The band being soloed, if any. Mirrored into [`OmhemillParams::solo_band`] for the audio
     /// thread.
     pub(crate) solo_band: Option<usize>,
@@ -163,7 +217,10 @@ impl Data {
 impl Model for Data {
     fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
         event.map(|selection, _| match selection {
-            BandSelection::Select(selected_band) => self.selected_band = *selected_band,
+            BandSelection::Select(selected_band) => {
+                self.selected_band = *selected_band;
+                self.selection_serial = self.selection_serial.wrapping_add(1);
+            }
         });
 
         event.map(|solo, _| match solo {
@@ -206,9 +263,15 @@ pub(crate) fn default_state(_editor_mode: Arc<AtomicCell<EditorMode>>) -> Arc<Vi
 }
 
 pub(crate) fn create(editor_state: Arc<ViziaState>, editor_data: Data) -> Option<Box<dyn Editor>> {
-    create_vizia_editor(editor_state, ViziaTheming::Custom, move |cx, _| {
+    // No built-in theming: vizia's light theme would otherwise paint its own views (dropdowns,
+    // popups, buttons, text fields) white under ours. nih-plug's widget layout is still needed.
+    create_vizia_editor(editor_state, ViziaTheming::None, move |cx, _| {
+        nih_plug_vizia::widgets::register_theme(cx);
         if let Err(err) = cx.add_stylesheet(include_style!("src/editor/theme.css")) {
             nih_error!("Failed to load stylesheet: {err:?}")
+        }
+        if let Err(err) = cx.add_stylesheet(CSS::from_string(&band_stylesheet())) {
+            nih_error!("Failed to load the band colours: {err:?}")
         }
 
         let mut data = editor_data.clone();
@@ -356,8 +419,12 @@ fn preset_menu(cx: &mut Context) {
         cx,
         |cx| {
             HStack::new(cx, |cx| {
-                Label::new(cx, Data::preset_name).class("preset-current");
-                Label::new(cx, "\u{25be}").class("preset-arrow");
+                // Not hoverable, so a click lands on the button itself: vizia only runs a press
+                // handler when the press targets that very view
+                Label::new(cx, Data::preset_name)
+                    .class("preset-current")
+                    .hoverable(false);
+                Label::new(cx, "\u{25be}").class("preset-arrow").hoverable(false);
             })
             .class("preset-button")
         },
@@ -437,7 +504,8 @@ fn band_chips(cx: &mut Context) {
             HStack::new(cx, move |cx| {
                 ParamButton::new(cx, Data::params, move |p| &p.threshold.bands[idx].enabled)
                     .with_label(format!("{}", idx + 1).as_str())
-                    .class("chip-dot");
+                    .class("chip-dot")
+                    .class(&band_class(idx));
 
                 Label::new(
                     cx,
@@ -452,7 +520,8 @@ fn band_chips(cx: &mut Context) {
                         }
                     }),
                 )
-                .class("chip-freq");
+                .class("chip-freq")
+                .hoverable(false);
 
                 Label::new(
                     cx,
@@ -468,9 +537,11 @@ fn band_chips(cx: &mut Context) {
                         }
                     }),
                 )
-                .class("chip-depth");
+                .class("chip-depth")
+                .hoverable(false);
             })
             .class("chip")
+            .class(&band_class(idx))
             .toggle_class(
                 "selected",
                 Data::selected_band.map(move |selected| *selected == Some(idx)),
@@ -482,40 +553,39 @@ fn band_chips(cx: &mut Context) {
     .class("chips");
 }
 
-/// The selected band's panel, floating over the display. It slides along with the band: the
-/// space either side of it is split in the band's position, so it stays under the band and inside
-/// the display. It sits in the lower half while the band is on or above the zero line, and in the
-/// upper half otherwise, so it never covers its own band.
+/// The selected band's panel, floating over the display at the bottom, centred under the band
+/// as far as the display allows. It is placed when the band is clicked and then stays put, so it
+/// never moves while you adjust it; the next click on a band places it again.
 ///
 /// The panel is placed directly in the display's stack rather than in a full-size row with
 /// spacers: vizia skips a non-hoverable view and everything inside it when hit testing, so such a
 /// row would either swallow the display's clicks or hide the panel's own.
 fn band_panel_overlay(cx: &mut Context) {
-    Binding::new(cx, Data::selected_band, |cx, selected_band| {
-        let Some(idx) = selected_band.get(cx) else {
+    Binding::new(cx, Data::selection_serial, |cx, _| {
+        let Some(idx) = Data::selected_band.get(cx) else {
             return;
         };
 
-        let position = Data::params.map(move |p| {
-            let band = &p.threshold.bands[idx];
-            Analyzer::freq_to_t(band.frequency.value()).clamp(0.0, 1.0)
-        });
-        let in_lower_half = Data::params.map(move |p| {
-            let band = &p.threshold.bands[idx];
-            let curve_params = p.threshold.curve_params();
-            // The line shows minus the summed sensitivity, so on or above zero is at most zero
-            band.shape.value().is_cut()
-                || Curve::new(&curve_params).sensitivity_ln(band.frequency.value().ln()) <= 0.0
-        });
+        let params = Data::params.get(cx);
+        let t = Analyzer::freq_to_t(params.threshold.bands[idx].frequency.value()).clamp(0.0, 1.0);
+        let display_width = Data::display_width.get(cx).load(Ordering::Relaxed);
 
-        band_panel(cx, idx)
+        let panel = band_panel(cx, idx)
             .position_type(PositionType::SelfDirected)
-            .left(position.map(|t| Stretch(*t)))
-            .right(position.map(|t| Stretch(1.0 - *t)))
-            .top(in_lower_half.map(|lower| if *lower { Stretch(1.0) } else { Pixels(10.0) }))
-            .bottom(in_lower_half.map(|lower| if *lower { Pixels(10.0) } else { Stretch(1.0) }))
-            .min_left(Pixels(10.0))
-            .min_right(Pixels(10.0));
+            .top(Stretch(1.0))
+            .bottom(Pixels(PANEL_MARGIN));
+        if display_width > PANEL_WIDTH + PANEL_MARGIN * 2.0 {
+            let left = (t * display_width - PANEL_WIDTH / 2.0)
+                .clamp(PANEL_MARGIN, display_width - PANEL_WIDTH - PANEL_MARGIN);
+            panel.left(Pixels(left)).right(Stretch(1.0));
+        } else {
+            // Not drawn yet: split the free space instead
+            panel
+                .left(Stretch(t))
+                .right(Stretch(1.0 - t))
+                .min_left(Pixels(PANEL_MARGIN))
+                .min_right(Pixels(PANEL_MARGIN));
+        }
     });
 }
 
@@ -523,12 +593,17 @@ fn band_panel_overlay(cx: &mut Context) {
 /// then the band's dynamics in lilac. A cut has no threshold or dynamics, only a note saying
 /// what it does.
 fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, VStack> {
+    let color_class = band_class(idx);
     VStack::new(cx, move |cx| {
+        let color_class = band_class(idx);
         HStack::new(cx, move |cx| {
             ParamButton::new(cx, Data::params, move |p| &p.threshold.bands[idx].enabled)
                 .with_label("")
-                .class("panel-on");
-            Label::new(cx, &format!("BAND {}", idx + 1)).class("panel-title");
+                .class("panel-on")
+                .class(&color_class);
+            Label::new(cx, &format!("BAND {}", idx + 1))
+                .class("panel-title")
+                .class(&color_class);
 
             HStack::new(cx, move |cx| {
                 let shapes = [
@@ -549,7 +624,8 @@ fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, VStack> {
                             ShapeIcon::new(cx, shape);
                         },
                     )
-                    .class("shape");
+                    .class("shape")
+                    .class(&band_class(idx));
                 }
             })
             .class("segmented");
@@ -583,14 +659,14 @@ fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, VStack> {
                     Data::params,
                     move |p| &p.threshold.bands[idx].frequency,
                     "FREQ",
-                    "coral",
+                    &band_class(idx),
                 );
                 labeled_bar(
                     cx,
                     Data::params,
                     move |p| &p.threshold.bands[idx].q,
                     "Q",
-                    "coral",
+                    &band_class(idx),
                 );
                 if !is_cut {
                     labeled_bar(
@@ -598,7 +674,7 @@ fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, VStack> {
                         Data::params,
                         move |p| &p.threshold.bands[idx].threshold_db,
                         "THRESHOLD",
-                        "coral",
+                        &band_class(idx),
                     );
                 }
             })
@@ -661,6 +737,7 @@ fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, VStack> {
         });
     })
     .class("band-panel")
+    .class(&color_class)
 }
 
 /// The global controls, one frame per signal colour.

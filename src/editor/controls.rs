@@ -4,7 +4,7 @@
 //
 // - `BarSlider` is the Sungam bar: a hairline box with a translucent fill in its section's colour
 //   and the value written at the left in that colour. Bipolar parameters fill outwards from their
-//   default instead of from the left edge.
+//   default instead of from the left edge. It is played like a knob: drag up and down.
 // - `SegmentButton` is one cell of a segmented selector for a stepped parameter.
 // - `ShapeIcon` draws a band shape, for the shape picker's segment buttons.
 // - `ResolutionButton` sets the STFT window size and overlap together from a few named steps.
@@ -19,23 +19,27 @@ use crate::curve::BandShape;
 use nih_plug_vizia::vizia::prelude::*;
 use nih_plug_vizia::vizia::vg;
 use nih_plug_vizia::widgets::param_base::ParamWidgetBase;
-use nih_plug_vizia::widgets::util::{self, ModifiersExt};
+use nih_plug_vizia::widgets::util::ModifiersExt;
 
-/// Shift-dragging moves the value this many times slower than the pointer.
+/// Dragging this many pixels up or down sweeps a bar's whole range.
+const DRAG_RANGE_PX: f32 = 200.0;
+/// Shift-dragging moves the value this many times slower.
 const GRANULAR_DRAG_MULTIPLIER: f32 = 0.1;
 
+/// A drag in progress. The value is accumulated here rather than read back from the parameter, so
+/// a stepped parameter still moves smoothly through its steps and shift never makes it jump.
 #[derive(Debug, Clone, Copy)]
-struct GranularDragStatus {
-    starting_x_coordinate: f32,
-    starting_value: f32,
+struct BarDrag {
+    last_y: f32,
+    value: f32,
 }
 
-/// A horizontal bar bound to a NIH-plug parameter. Click or drag to set the value, shift-drag for
-/// finer control, scroll to nudge, and double-click (or right-click, or command-click) to reset.
+/// A horizontal bar bound to a NIH-plug parameter. Clicking never jumps the value: drag up to
+/// raise it and down to lower it, shift-drag for finer control, scroll to nudge, and double-click
+/// (or right-click, or command-click) to reset.
 pub struct BarSlider {
     param_base: ParamWidgetBase,
-    drag_active: bool,
-    granular_drag_status: Option<GranularDragStatus>,
+    drag: Option<BarDrag>,
     scrolled_lines: f32,
 }
 
@@ -53,8 +57,7 @@ impl BarSlider {
     {
         Self {
             param_base: ParamWidgetBase::new(cx, params.clone(), params_to_param),
-            drag_active: false,
-            granular_drag_status: None,
+            drag: None,
             scrolled_lines: 0.0,
         }
         .build(
@@ -99,24 +102,15 @@ impl View for BarSlider {
                 if cx.modifiers().command() {
                     self.reset_to_default(cx);
                 } else {
-                    self.drag_active = true;
                     cx.capture();
                     cx.focus();
                     cx.set_active(true);
 
                     self.param_base.begin_set_parameter(cx);
-                    if cx.modifiers().shift() {
-                        self.granular_drag_status = Some(GranularDragStatus {
-                            starting_x_coordinate: cx.mouse().cursorx,
-                            starting_value: self.param_base.unmodulated_normalized_value(),
-                        });
-                    } else {
-                        self.granular_drag_status = None;
-                        self.param_base.set_normalized_value(
-                            cx,
-                            util::remap_current_entity_x_coordinate(cx, cx.mouse().cursorx),
-                        );
-                    }
+                    self.drag = Some(BarDrag {
+                        last_y: cx.mouse().cursory,
+                        value: self.param_base.unmodulated_normalized_value(),
+                    });
                 }
 
                 meta.consume();
@@ -129,9 +123,7 @@ impl View for BarSlider {
                 meta.consume();
             }
             WindowEvent::MouseUp(MouseButton::Left) => {
-                if self.drag_active {
-                    self.drag_active = false;
-                    self.granular_drag_status = None;
+                if self.drag.take().is_some() {
                     cx.release();
                     cx.set_active(false);
 
@@ -140,29 +132,20 @@ impl View for BarSlider {
                     meta.consume();
                 }
             }
-            WindowEvent::MouseMove(x, _y) => {
-                if self.drag_active {
-                    if cx.modifiers().shift() {
-                        let status = *self.granular_drag_status.get_or_insert_with(|| {
-                            GranularDragStatus {
-                                starting_x_coordinate: *x,
-                                starting_value: self.param_base.unmodulated_normalized_value(),
-                            }
-                        });
-
-                        let start_x = util::remap_current_entity_x_t(cx, status.starting_value);
-                        let delta_x = (*x - status.starting_x_coordinate) * GRANULAR_DRAG_MULTIPLIER;
-                        self.param_base.set_normalized_value(
-                            cx,
-                            util::remap_current_entity_x_coordinate(cx, start_x + delta_x),
-                        );
+            WindowEvent::MouseMove(_x, y) => {
+                if let Some(mut drag) = self.drag {
+                    let multiplier = if cx.modifiers().shift() {
+                        GRANULAR_DRAG_MULTIPLIER
                     } else {
-                        self.granular_drag_status = None;
-                        self.param_base.set_normalized_value(
-                            cx,
-                            util::remap_current_entity_x_coordinate(cx, *x),
-                        );
-                    }
+                        1.0
+                    };
+                    // Up is more, as on a knob
+                    let delta = (drag.last_y - *y) / (DRAG_RANGE_PX * cx.scale_factor());
+                    drag.value = (drag.value + delta * multiplier).clamp(0.0, 1.0);
+                    drag.last_y = *y;
+                    self.drag = Some(drag);
+
+                    self.param_base.set_normalized_value(cx, drag.value);
                 }
             }
             WindowEvent::MouseScroll(_scroll_x, scroll_y) => {
@@ -171,7 +154,7 @@ impl View for BarSlider {
                 if self.scrolled_lines.abs() >= 1.0 {
                     let use_finer_steps = cx.modifiers().shift();
 
-                    if !self.drag_active {
+                    if self.drag.is_none() {
                         self.param_base.begin_set_parameter(cx);
                     }
 
@@ -191,7 +174,7 @@ impl View for BarSlider {
 
                     self.param_base.set_normalized_value(cx, current_value);
 
-                    if !self.drag_active {
+                    if self.drag.is_none() {
                         self.param_base.end_set_parameter(cx);
                     }
                 }

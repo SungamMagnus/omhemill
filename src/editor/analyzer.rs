@@ -24,7 +24,7 @@ use std::cell::Cell;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use super::{BandSelection, Data, SoloEvent};
+use super::{BandSelection, Data, SoloEvent, BAND_COLORS};
 use crate::analyzer::AnalyzerData;
 use crate::curve::{octaves_from_q, BandShape, Curve, NUM_BANDS};
 use crate::OmhemillParams;
@@ -37,8 +37,6 @@ const THRESHOLD_LINE_COLOR: vg::Color = vg::Color::rgbaf(0.925, 0.910, 0.875, 1.
 /// compression, the way pulling an EQ band down cuts.
 const THRESHOLD_RANGE_DB: f32 = 18.0;
 const THRESHOLD_HALF_HEIGHT: f32 = 0.45;
-/// Band handles are coral, the colour of detection.
-const NODE_COLOR: vg::Color = vg::Color::rgbaf(0.929, 0.506, 0.349, 1.0);
 const NODE_DISABLED_COLOR: vg::Color = vg::Color::rgbaf(0.925, 0.910, 0.875, 0.38);
 /// The stage the spectrum sits on, used to punch the number out of a filled handle.
 const STAGE_COLOR: vg::Color = vg::Color::rgbaf(0.125, 0.122, 0.118, 1.0);
@@ -105,6 +103,8 @@ pub struct Analyzer {
     scrolled_lines: f32,
     /// Lazily registered with the canvas the first time we draw text on it.
     font: Cell<Option<vg::FontId>>,
+    /// Written on every draw, so the band panel can be centred under its band.
+    display_width: Arc<AtomicF32>,
 }
 
 impl Analyzer {
@@ -149,6 +149,7 @@ impl Analyzer {
             hover: None,
             scrolled_lines: 0.0,
             font: Cell::new(None),
+            display_width: Data::display_width.get(cx),
         }
         .build(
             cx,
@@ -445,6 +446,8 @@ impl View for Analyzer {
         }
 
         let selected = Data::selected_band.get(cx);
+        self.display_width
+            .store(bounds.w / cx.scale_factor(), Ordering::Relaxed);
 
         {
             // The analyzer data is pulled directly from the spectral `CompressorBank`
@@ -502,6 +505,12 @@ fn threshold_to_y(bounds: BoundingBox, threshold_db: f32) -> f32 {
 fn y_to_threshold(bounds: BoundingBox, y: f32) -> f32 {
     let t = 0.5 - ((y - bounds.y) / bounds.h);
     (t / THRESHOLD_HALF_HEIGHT) * THRESHOLD_RANGE_DB
+}
+
+/// A band's own colour. See [`BAND_COLORS`].
+fn band_color(idx: usize, alpha: f32) -> vg::Color {
+    let (r, g, b) = BAND_COLORS[idx % BAND_COLORS.len()];
+    vg::Color::rgba(r, g, b, (alpha * 255.0).round() as u8)
 }
 
 /// A frequency as the readout writes it.
@@ -641,7 +650,7 @@ impl Analyzer {
         }
     }
 
-    /// A faint coral wash over the range the selected band covers.
+    /// A faint wash in the band's colour over the range the selected band covers.
     fn draw_band_region(&self, cx: &mut DrawContext, canvas: &mut Canvas, idx: usize) {
         if !self.params.threshold.bands[idx].enabled.value() {
             return;
@@ -658,7 +667,7 @@ impl Analyzer {
         region.rect(left, bounds.y, right - left, bounds.h);
         canvas.fill_path(
             &region,
-            &vg::Paint::color(vg::Color::rgbaf(NODE_COLOR.r, NODE_COLOR.g, NODE_COLOR.b, 0.09)),
+            &vg::Paint::color(band_color(idx, 0.09)),
         );
     }
 
@@ -752,8 +761,8 @@ impl Analyzer {
         }
     }
 
-    /// The numbered band handles on the threshold line. The selected band is filled, the others
-    /// are outlined, and disabled ones are grey. Under each enabled band hangs an amber bar for
+    /// The numbered band handles on the threshold line, each in its own colour. The selected band
+    /// is filled, the others are outlined, and disabled ones are grey. Under each enabled band hangs an amber bar for
     /// how much that band is braking right now.
     fn draw_bands(
         &self,
@@ -771,7 +780,7 @@ impl Analyzer {
 
         for (idx, (x, y, enabled, _is_cut)) in self.band_positions(bounds).into_iter().enumerate() {
             let color = if enabled {
-                NODE_COLOR
+                band_color(idx, 1.0)
             } else {
                 NODE_DISABLED_COLOR
             };

@@ -350,6 +350,8 @@ impl Plugin for Omhemill {
                 analyzer_data: self.analyzer_output_data.clone(),
                 sample_rate: self.sample_rate.clone(),
                 selected_band: None,
+                selection_serial: 0,
+                display_width: Arc::new(AtomicF32::new(0.0)),
                 solo_band: None,
                 presets: Vec::new(),
                 preset_index: None,

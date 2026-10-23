@@ -239,6 +239,8 @@ dropdown.preset-menu {
 
 .preset-list {
   height: auto;
+  child-left: 0px;
+  child-right: 0px;
   child-top: 6px;
   child-bottom: 6px;
 }
@@ -264,10 +266,10 @@ dropdown.preset-menu {
 .preset-item:hover {
   background-color: #ece8df14;
 }
-/* The preset that is loaded, marked in coral like the selected band */
+/* The preset that is loaded, in full ink: the band colours stay with the bands */
 .preset-item.current {
-  color: #ed8159;
-  background-color: #ed81591f;
+  color: #ece8df;
+  background-color: #ece8df1f;
 }
 
 .preset-empty {
@@ -277,6 +279,10 @@ dropdown.preset-menu {
   child-bottom: 1s;
   font-size: 10;
   color: #ece8df73;
+}
+
+scrollview > scroll_content {
+  child-right: 0px;
 }
 
 scrollbar {
@@ -571,6 +577,7 @@ segment-button.lilac:checked {
 bar-slider {
   height: 26px;
   width: 1s;
+  cursor: ns-resize;
   background-color: #ece8df0a;
   border-color: #ece8df38;
 }
