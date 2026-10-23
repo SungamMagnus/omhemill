@@ -40,7 +40,7 @@
   height: 64px;
   child-left: 32px;
   child-right: 32px;
-  col-between: 18px;
+  col-between: 16px;
 }
 
 /* Letter-spacing is not available, so the wordmark's tracking is one label per letter */
@@ -173,7 +173,7 @@ param-button.header-toggle.amber:checked {
 
 /* The preset name, editable in place */
 textbox.preset-name {
-  width: 140px;
+  width: 120px;
   height: 28px;
   left: -1px;
   child-left: 10px;

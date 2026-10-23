@@ -14,33 +14,36 @@ still largely its code.
 ## [0.2.0] - 2026-10-23
 
 Bands with Pro-Q detail and a face as small as soothe's, in the graphite edition of the Sungam
-design system.
+design system, with controls named the way a classic compressor and EQ name them.
 
 ### Added
 
-- Eight bands in place of the six nodes. Each has a shape (low cut, low shelf, bell, high shelf,
-  high cut), frequency, width, sensitivity (±18 dB) and per-band sharpness, speed, max change and
-  action. Cuts fence the brake off rather than filter the audio. The bands are resolved into
-  per-bin arrays only when they change, and envelope followers now run at a per-bin speed.
-- A global Action: Suppress, Lift or Both. Both directions take their ratio from Sharpness, and
-  lift is capped at 24 dB.
+- Eight bands in place of the six nodes, each like a dynamic EQ band: a shape (low cut, low shelf,
+  bell, high shelf, high cut), Freq, Q, a Threshold relative to the main one, and band dynamics:
+  Ratio ×, Attack/Release ×, Range and Mode. Cuts set where compression works rather than filter
+  the audio. The bands are resolved into per-bin arrays only when they change, and envelope
+  followers now run at a per-bin speed.
+- A global Mode: Downward, Upward or Both. Both directions take the Ratio control, and upward
+  compression is capped at 24 dB.
 - A floating band panel that follows the selected band, with a shape picker, the band's controls
   and Solo.
-- Delta, to hear only what the brake changes, and Bypass, the host's bypass.
+- Delta, to hear only what the compression changes, and Bypass, the host's bypass.
 - Band Solo, from the panel or by alt-dragging a band.
 - Factory and user presets, with a preset bar in the header. The preset name is saved with the
   session.
-- Display gestures: double-click to create a band, shift-drag for fine moves, scroll for width, a
+- Display gestures: double-click to create a band, shift-drag for fine moves, scroll for Q, a
   hover readout with frequency, note, input level and gain change.
 
 ### Changed
 
 - The editor is now in the graphite (dark) edition of the Sungam design system, matching Beygla and
   Samplebrain: Menlo, square corners, hairline frames, and bar sliders in place of the knobs.
-- The display draws a flat sensitivity line on its own scale instead of the sloped absolute
-  threshold, and shows the brake's work as amber between the input and output spectra.
+- Controls use classic compressor names: Depth is Threshold, Sharpness is Ratio, Selectivity is
+  Knee, Trim is Output. The sidechain modes are Int, Ext Match and Ext Duck.
+- The display draws a flat threshold line on its own scale instead of the sloped absolute
+  threshold; pulling a band down compresses harder. The gain reduction shows as amber between the
+  input and output spectra.
 - One Resolution control (Fast, Balanced, Fine, Ultra) sets window size and overlap together.
-- Threshold modes are now shown as Self, Sidechain and Duck under "Listen to".
 - The window is 1200×645 and the footer is gone.
 
 ### Removed

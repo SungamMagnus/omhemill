@@ -21,7 +21,8 @@ use std::sync::Arc;
 
 use crate::analyzer::AnalyzerData;
 use crate::curve::{
-    Action, BandAction, BandSettings, BandShape, Curve, CurveParams, NUM_BANDS, RANGE_UNLIMITED_DB,
+    octaves_from_q, q_from_octaves, Action, BandAction, BandSettings, BandShape, Curve, CurveParams,
+    NUM_BANDS, RANGE_UNLIMITED_DB,
 };
 use crate::OmhemillParams;
 
@@ -194,11 +195,12 @@ pub struct BandParams {
     pub shape: EnumParam<BandShape>,
     #[id = "band_freq"]
     pub frequency: FloatParam,
-    /// A bell's width, a shelf's slope, or a cut's softness, in octaves.
+    /// A bell's Q, a shelf's slope, or how sharply a cut sets in. Higher is narrower.
     #[id = "band_width"]
-    pub width: FloatParam,
+    pub q: FloatParam,
+    /// The band's threshold relative to the main threshold. Lower compresses harder.
     #[id = "band_sens"]
-    pub sensitivity_db: FloatParam,
+    pub threshold_db: FloatParam,
     #[id = "band_sharp"]
     pub sharp: FloatParam,
     #[id = "band_speed"]
@@ -215,7 +217,7 @@ pub enum ThresholdMode {
     /// Configure the thresholds to offset pink noise. This means that the slope will receive an
     /// additional -3 dB/octave slope.
     #[id = "internal"]
-    #[name = "Self"]
+    #[name = "Internal"]
     Internal,
     /// Dynamically reconfigure the thresholds based on a sidechain input. The -3 dB/octave slope
     /// offset is not applied here so the curve stays true to the sidechain input at the default
@@ -224,13 +226,13 @@ pub enum ThresholdMode {
     /// how how much of the other channel values to mix in before multiplying the sidechain gain
     /// values with the thresholds.
     #[id = "sidechain"]
-    #[name = "Sidechain"]
+    #[name = "Ext Match"]
     SidechainMatch,
     /// Compress the input signal based on the sidechain signal's activity. Can be used to
     /// spectrally duck the input, or to amplify parts of the input based on holes in the sidechain
     /// signal.
     #[id = "sidechain_compress"]
-    #[name = "Duck"]
+    #[name = "Ext Duck"]
     SidechainCompress,
 }
 
@@ -291,7 +293,7 @@ impl ThresholdParams {
 
         ThresholdParams {
             threshold_db: FloatParam::new(
-                "Global Threshold",
+                "Threshold",
                 -12.0,
                 FloatRange::Linear {
                     min: -100.0,
@@ -301,12 +303,12 @@ impl ThresholdParams {
             .with_callback(set_update_both_thresholds.clone())
             .with_unit(" dB")
             .with_step_size(0.1),
-            action: EnumParam::new("Action", Action::Suppress).with_callback({
+            action: EnumParam::new("Mode", Action::Suppress).with_callback({
                 let set_update_bands = set_update_bands.clone();
                 Arc::new(move |_| set_update_bands())
             }),
 
-            mode: EnumParam::new("Mode", ThresholdMode::Internal)
+            mode: EnumParam::new("Sidechain", ThresholdMode::Internal)
                 // Not the most efficient way to do this, but it's a bit cleaner than the
                 // alternative
                 .with_callback(Arc::new(move |_| set_update_both_thresholds(0.0))),
@@ -333,8 +335,9 @@ impl ThresholdParams {
                 enabled: band.enabled.value(),
                 shape: band.shape.value(),
                 ln_freq: band.frequency.value().ln(),
-                width_octaves: band.width.value(),
-                sensitivity_db: band.sensitivity_db.value(),
+                width_octaves: octaves_from_q(band.q.value()),
+                // A lower band threshold means more processing, which is what sensitivity counts
+                sensitivity_db: -band.threshold_db.value(),
                 ln_sharp: band.sharp.value().ln(),
                 ln_speed: band.speed.value().ln(),
                 range_db: band.range_db.value(),
@@ -390,20 +393,19 @@ impl BandParams {
             .with_callback(float_callback.clone())
             .with_value_to_string(formatters::v2s_f32_hz_then_khz(0))
             .with_string_to_value(formatters::s2v_f32_hz_then_khz()),
-            width: FloatParam::new(
-                "Band Width",
-                1.0,
+            q: FloatParam::new(
+                "Band Q",
+                q_from_octaves(1.0),
                 FloatRange::Skewed {
-                    min: 0.05,
-                    max: 3.0,
-                    factor: FloatRange::skew_factor(-1.0),
+                    min: 0.4,
+                    max: 28.0,
+                    factor: FloatRange::skew_factor(-2.0),
                 },
             )
             .with_callback(float_callback.clone())
-            .with_unit(" oct")
             .with_value_to_string(formatters::v2s_f32_rounded(2)),
-            sensitivity_db: FloatParam::new(
-                "Band Sensitivity",
+            threshold_db: FloatParam::new(
+                "Band Threshold",
                 0.0,
                 FloatRange::Linear {
                     min: -18.0,
@@ -414,7 +416,7 @@ impl BandParams {
             .with_unit(" dB")
             .with_step_size(0.1),
             sharp: FloatParam::new(
-                "Band Sharp",
+                "Band Ratio",
                 1.0,
                 FloatRange::Skewed {
                     min: 0.25,
@@ -426,7 +428,7 @@ impl BandParams {
             .with_value_to_string(v2s_multiplier())
             .with_string_to_value(s2v_multiplier()),
             speed: FloatParam::new(
-                "Band Speed",
+                "Band Attack/Release",
                 1.0,
                 FloatRange::Skewed {
                     min: 0.25,
@@ -454,7 +456,7 @@ impl BandParams {
                     format!("{value:.1} dB")
                 }
             })),
-            action: EnumParam::new("Band Action", BandAction::Auto).with_callback(Arc::new(
+            action: EnumParam::new("Band Mode", BandAction::Auto).with_callback(Arc::new(
                 move |_| set_update_bands(),
             )),
         }
@@ -543,8 +545,13 @@ impl CompressorParams {
             .with_unit(" dB")
             .with_step_size(0.1),
             ratio: {
+                // The downwards ratio is the Ratio control; the upwards one is hidden
                 let ratio = FloatParam::new(
-                    format!("{name_prefix} Ratio"),
+                    if name_prefix == DOWNWARDS_NAME_PREFIX {
+                        String::from("Ratio")
+                    } else {
+                        format!("{name_prefix} Ratio")
+                    },
                     1.0,
                     FloatRange::Skewed {
                         min: 1.0,
@@ -557,8 +564,8 @@ impl CompressorParams {
                 .with_value_to_string(formatters::v2s_compression_ratio(2))
                 .with_string_to_value(formatters::s2v_compression_ratio());
 
-                // Both directions take their ratio from Sharpness, the downwards ratio, so the
-                // upwards one no longer does anything. It stays so old sessions still load.
+                // Both directions take their ratio from the Ratio control, the downwards ratio, so
+                // the upwards one no longer does anything. It stays so old sessions still load.
                 if name_prefix == UPWARDS_NAME_PREFIX {
                     ratio.hide()
                 } else {
@@ -582,7 +589,11 @@ impl CompressorParams {
             .with_value_to_string(formatters::v2s_f32_percentage(0))
             .with_string_to_value(formatters::s2v_f32_percentage()),
             knee_width_db: FloatParam::new(
-                format!("{name_prefix} Knee"),
+                if name_prefix == DOWNWARDS_NAME_PREFIX {
+                    String::from("Knee")
+                } else {
+                    format!("{name_prefix} Knee")
+                },
                 6.0,
                 FloatRange::Skewed {
                     min: 0.0,

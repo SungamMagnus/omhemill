@@ -167,14 +167,14 @@ impl<'a> FactoryPreset<'a> {
         self
     }
 
-    /// Switch a band on with a shape, frequency, width in octaves and sensitivity in decibels.
-    fn band(self, idx: usize, shape: BandShape, freq: f32, width: f32, sensitivity_db: f32) -> Self {
+    /// Switch a band on with a shape, frequency, Q, and threshold relative to the main one.
+    fn band(self, idx: usize, shape: BandShape, freq: f32, q: f32, threshold_db: f32) -> Self {
         let band = &self.params.threshold.bands[idx];
         self.set(&band.enabled, true)
             .set(&band.shape, shape)
             .set(&band.frequency, freq)
-            .set(&band.width, width)
-            .set(&band.sensitivity_db, sensitivity_db)
+            .set(&band.q, q)
+            .set(&band.threshold_db, threshold_db)
     }
 
     fn done(self) -> Preset {
@@ -198,17 +198,17 @@ fn factory(params: &OmhemillParams) -> Vec<Preset> {
             .set(selectivity, 6.0)
             .set(&global.compressor_attack_ms, 15.0)
             .set(&global.compressor_release_ms, 120.0)
-            .band(0, BandShape::LowCut, 40.0, 0.25, 0.0)
+            .band(0, BandShape::LowCut, 40.0, 5.8, 0.0)
             .done(),
         FactoryPreset::new(params, "Vocal De-harsh")
             .set(&threshold.threshold_db, -24.0)
             .set(sharpness, 4.0)
             .set(&global.compressor_attack_ms, 5.0)
             .set(&global.compressor_release_ms, 80.0)
-            .band(0, BandShape::LowCut, 120.0, 0.25, 0.0)
-            .band(1, BandShape::Bell, 300.0, 1.2, -6.0)
-            .band(2, BandShape::Bell, 3_000.0, 0.8, 6.0)
-            .band(3, BandShape::Bell, 7_000.0, 0.5, 8.0)
+            .band(0, BandShape::LowCut, 120.0, 5.8, 0.0)
+            .band(1, BandShape::Bell, 300.0, 1.2, 6.0)
+            .band(2, BandShape::Bell, 3_000.0, 1.8, -6.0)
+            .band(3, BandShape::Bell, 7_000.0, 2.9, -8.0)
             .set(&bands[3].speed, 2.0)
             .done(),
         FactoryPreset::new(params, "De-ess")
@@ -216,8 +216,8 @@ fn factory(params: &OmhemillParams) -> Vec<Preset> {
             .set(sharpness, 6.0)
             .set(&global.compressor_attack_ms, 1.0)
             .set(&global.compressor_release_ms, 40.0)
-            .band(0, BandShape::LowCut, 3_500.0, 0.5, 0.0)
-            .band(1, BandShape::Bell, 7_000.0, 1.0, 6.0)
+            .band(0, BandShape::LowCut, 3_500.0, 2.9, 0.0)
+            .band(1, BandShape::Bell, 7_000.0, 1.4, -6.0)
             .set(&bands[1].speed, 2.0)
             .done(),
         FactoryPreset::new(params, "Mix Bus Smooth")
@@ -227,7 +227,7 @@ fn factory(params: &OmhemillParams) -> Vec<Preset> {
             .set(&global.compressor_attack_ms, 30.0)
             .set(&global.compressor_release_ms, 250.0)
             .set(&global.dry_wet_ratio, 0.6)
-            .band(0, BandShape::LowCut, 60.0, 0.25, 0.0)
+            .band(0, BandShape::LowCut, 60.0, 5.8, 0.0)
             .done(),
         FactoryPreset::new(params, "Lift Detail")
             .set(&threshold.action, Action::Lift)
@@ -235,9 +235,9 @@ fn factory(params: &OmhemillParams) -> Vec<Preset> {
             .set(sharpness, 2.0)
             .set(&global.compressor_attack_ms, 50.0)
             .set(&global.compressor_release_ms, 300.0)
-            .band(0, BandShape::LowShelf, 200.0, 1.0, -6.0)
+            .band(0, BandShape::LowShelf, 200.0, 1.4, 6.0)
             .set(&bands[0].action, BandAction::Off)
-            .band(1, BandShape::HighShelf, 6_000.0, 1.0, 4.0)
+            .band(1, BandShape::HighShelf, 6_000.0, 1.4, -4.0)
             .set(&bands[1].range_db, 6.0)
             .done(),
         FactoryPreset::new(params, "Spectral OTT")

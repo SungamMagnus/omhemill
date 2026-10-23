@@ -212,7 +212,7 @@ impl Default for GlobalParams {
             // We don't need any smoothing for these parameters as the overlap-add process will
             // already act as a form of smoothing
             output_gain: FloatParam::new(
-                "Output Gain",
+                "Output",
                 util::db_to_gain(0.0),
                 FloatRange::Skewed {
                     min: util::db_to_gain(-50.0),

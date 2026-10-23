@@ -16,15 +16,16 @@ files.
 
 ## The display
 
-The white line is **sensitivity**. It sits flat at 0 dB until a band bends it: above zero the brake
-bites harder there, below zero it leaves that range alone. Behind it is the input spectrum, and the
-amber between the input and the output is what the brake is taking away right now (a lighter amber
-where it lifts).
+The white line is the **threshold**, relative to the main Threshold. It sits flat at 0 dB until a
+band bends it: pull a band down and it compresses harder there, the way pulling an EQ band down
+cuts; push it up and it leaves that range alone. Behind it is the input spectrum, and the amber
+between the input and the output is the gain reduction right now (a lighter amber where upward
+compression lifts).
 
 - **Double-click** empty space to add a band there: a cut at the far edges, a shelf near them, a
   bell anywhere else.
-- **Drag** a band for frequency and sensitivity. Hold **shift** for fine moves.
-- **Scroll** over a band to change its width.
+- **Drag** a band for frequency and threshold. Hold **shift** for fine moves.
+- **Scroll** over a band to change its Q.
 - **Alt-drag** a band to solo it while you sweep.
 - **Double-click** a band to switch it off. Click empty space to deselect.
 - **Hover** for the frequency, nearest note, input level and gain change at that point.
@@ -34,26 +35,26 @@ where it lifts).
 Selecting a band, on the display or in the chip row below it, opens its panel.
 
 - **Shape** — low cut, low shelf, bell, high shelf, high cut. The cuts do not filter the audio; they
-  fence off where the brake works at all.
-- **Frequency**, **Width** (a bell's width, a shelf's slope, a cut's softness), and
-  **Sensitivity** (±18 dB).
-- **This band only** — scale the global controls inside the band: **Sharpness** and **Speed**
-  (×0.25 to ×4), **Max change** (the most gain change the band allows), and **Action** (follow the
-  header, or suppress, lift or do nothing here).
+  set where compression works at all.
+- **Freq**, **Q** (a bell's bandwidth, a shelf's slope, how sharply a cut sets in), and
+  **Threshold** (±18 dB relative to the main Threshold).
+- **Band dynamics** — **Ratio ×** and **Attack/Release ×** (×0.25 to ×4) scale the main Ratio and
+  timing inside the band, **Range** is the most gain change the band allows, and **Mode** follows
+  the header or makes the band downward, upward or off.
 - **Solo** plays only the band's range. With Delta on, you hear only what that band removes.
 
 ## The rest
 
-- **Action** — Suppress, Lift or Both.
-- **Listen to** — Self, Sidechain (the sidechain sets the curve) or Duck (the sidechain drives the
-  brake).
-- **Detect** — Depth (how far below the signal the brake sits), Sharpness (the ratio, for both
-  directions) and Selectivity (the knee).
-- **Time** — Attack and Release.
-- **Output** — Mix and Trim.
+- **Mode** — Downward, Upward or Both.
+- **Sidechain** — Int (the input drives it), Ext Match (the threshold follows the sidechain's
+  spectrum) or Ext Duck (the sidechain drives the compression).
+- **Compressor** — Threshold, Ratio (for both directions) and Knee.
+- **Time** — Attack and Release: how fast compression sets in when a frequency gets louder, and
+  how fast it lets go.
+- **Output** — Mix and Output.
 - **Resolution** — Fast, Balanced, Fine or Ultra: finer separates resonances more cleanly, at the
   cost of latency. Click to step forward, right-click to step back.
-- **Delta** — hear only what the brake changes.
+- **Delta** — hear only what the compression changes.
 - **Bypass** — the host's bypass.
 
 ## Presets

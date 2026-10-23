@@ -244,8 +244,8 @@ fn field(cx: &mut Context, caption: &str, contents: impl FnOnce(&mut Context)) {
     .class("field");
 }
 
-/// The wordmark, the presets, what the brake does and what it listens to, then resolution and
-/// the two monitoring switches on the right. Every control is the same height as a segment.
+/// The wordmark, the presets, the compression mode and the sidechain, then resolution and the
+/// two monitoring switches on the right. Every control is the same height as a segment.
 fn header(cx: &mut Context) {
     HStack::new(cx, |cx| {
         HStack::new(cx, |cx| {
@@ -273,22 +273,22 @@ fn header(cx: &mut Context) {
             .class("segmented");
         });
 
-        field(cx, "ACTION", |cx| {
+        field(cx, "MODE", |cx| {
             segmented(
                 cx,
                 Data::params,
                 |p| &p.threshold.action,
-                &["SUPPRESS", "LIFT", "BOTH"],
+                &["DOWNWARD", "UPWARD", "BOTH"],
                 "coral",
             );
         });
 
-        field(cx, "LISTEN TO", |cx| {
+        field(cx, "SIDECHAIN", |cx| {
             segmented(
                 cx,
                 Data::params,
                 |p| &p.threshold.mode,
-                &["SELF", "SIDECHAIN", "DUCK"],
+                &["INT", "EXT MATCH", "EXT DUCK"],
                 "violet",
             );
         });
@@ -343,7 +343,7 @@ fn bands(cx: &mut Context) {
 }
 
 /// One chip per band: a numbered button that switches the band on and off, plus its frequency
-/// and either its sensitivity or, for a cut, which side it fences off.
+/// and either its threshold or, for a cut, which side it fences off.
 fn band_chips(cx: &mut Context) {
     HStack::new(cx, |cx| {
         for idx in 0..NUM_BANDS {
@@ -371,13 +371,13 @@ fn band_chips(cx: &mut Context) {
                     cx,
                     Data::params.map(move |p| {
                         let band = &p.threshold.bands[idx];
-                        let sensitivity_db = band.sensitivity_db.value();
+                        let threshold_db = band.threshold_db.value();
                         match band.shape.value() {
                             BandShape::LowCut => String::from("LO CUT"),
                             BandShape::HighCut => String::from("HI CUT"),
-                            BandShape::LowShelf => format!("LS {sensitivity_db:+.1}"),
-                            BandShape::HighShelf => format!("HS {sensitivity_db:+.1}"),
-                            BandShape::Bell => format!("{sensitivity_db:+.1}"),
+                            BandShape::LowShelf => format!("LS {threshold_db:+.1}"),
+                            BandShape::HighShelf => format!("HS {threshold_db:+.1}"),
+                            BandShape::Bell => format!("{threshold_db:+.1}"),
                         }
                     }),
                 )
@@ -412,8 +412,9 @@ fn band_panel_overlay(cx: &mut Context) {
         let in_lower_half = Data::params.map(move |p| {
             let band = &p.threshold.bands[idx];
             let curve_params = p.threshold.curve_params();
+            // The line shows minus the summed sensitivity, so on or above zero is at most zero
             band.shape.value().is_cut()
-                || Curve::new(&curve_params).sensitivity_ln(band.frequency.value().ln()) >= 0.0
+                || Curve::new(&curve_params).sensitivity_ln(band.frequency.value().ln()) <= 0.0
         });
 
         HStack::new(cx, move |cx| {
@@ -434,9 +435,9 @@ fn band_panel_overlay(cx: &mut Context) {
     });
 }
 
-/// The band panel: on/off, the shape, and close in the top row; frequency, width and
-/// sensitivity; then the four brake trims in lilac. A cut has no sensitivity or trims, only a
-/// note saying what it does.
+/// The band panel: on/off, the shape, solo and close in the top row; frequency, Q and threshold;
+/// then the band's dynamics in lilac. A cut has no threshold or dynamics, only a note saying
+/// what it does.
 fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, VStack> {
     VStack::new(cx, move |cx| {
         HStack::new(cx, move |cx| {
@@ -497,22 +498,22 @@ fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, VStack> {
                     cx,
                     Data::params,
                     move |p| &p.threshold.bands[idx].frequency,
-                    "FREQUENCY",
+                    "FREQ",
                     "coral",
                 );
                 labeled_bar(
                     cx,
                     Data::params,
-                    move |p| &p.threshold.bands[idx].width,
-                    if is_cut { "SOFTNESS" } else { "WIDTH" },
+                    move |p| &p.threshold.bands[idx].q,
+                    "Q",
                     "coral",
                 );
                 if !is_cut {
                     labeled_bar(
                         cx,
                         Data::params,
-                        move |p| &p.threshold.bands[idx].sensitivity_db,
-                        "SENSITIVITY",
+                        move |p| &p.threshold.bands[idx].threshold_db,
+                        "THRESHOLD",
                         "coral",
                     );
                 }
@@ -522,14 +523,15 @@ fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, VStack> {
             if is_cut {
                 Label::new(
                     cx,
-                    "A cut has no sensitivity: it only says where the brake stops working.",
+                    "A cut has no threshold: it only sets where the compression stops.",
                 )
                 .class("panel-note");
             } else {
-                // These scale the global controls inside this band only
+                // These scale the main ratio and timing, and limit the gain change, in this band
+                // only
                 VStack::new(cx, move |cx| {
                     HStack::new(cx, |cx| {
-                        Label::new(cx, "THIS BAND ONLY").class("trims-title");
+                        Label::new(cx, "BAND DYNAMICS").class("trims-title");
                         Element::new(cx).class("trim-rule");
                     })
                     .class("trims-heading");
@@ -538,30 +540,30 @@ fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, VStack> {
                             cx,
                             Data::params,
                             move |p| &p.threshold.bands[idx].sharp,
-                            "SHARPNESS",
+                            "RATIO x",
                             "lilac",
                         );
                         labeled_bar(
                             cx,
                             Data::params,
                             move |p| &p.threshold.bands[idx].speed,
-                            "SPEED",
+                            "ATTACK/REL x",
                             "lilac",
                         );
                         labeled_bar(
                             cx,
                             Data::params,
                             move |p| &p.threshold.bands[idx].range_db,
-                            "MAX CHANGE",
+                            "RANGE",
                             "lilac",
                         );
                         VStack::new(cx, move |cx| {
-                            Label::new(cx, "ACTION").class("bar-name");
+                            Label::new(cx, "MODE").class("bar-name");
                             segmented(
                                 cx,
                                 Data::params,
                                 move |p| &p.threshold.bands[idx].action,
-                                &["AUTO", "SUP", "LIFT", "OFF"],
+                                &["AUTO", "DOWN", "UP", "OFF"],
                                 "lilac",
                             );
                         })
@@ -580,21 +582,21 @@ fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, VStack> {
 /// The global controls, one frame per signal colour.
 fn banks(cx: &mut Context) {
     HStack::new(cx, |cx| {
-        frame(cx, "DETECT", "coral", |cx| {
+        frame(cx, "COMPRESSOR", "coral", |cx| {
             HStack::new(cx, |cx| {
-                labeled_bar(cx, Data::params, |p| &p.threshold.threshold_db, "DEPTH", "coral");
+                labeled_bar(cx, Data::params, |p| &p.threshold.threshold_db, "THRESHOLD", "coral");
                 labeled_bar(
                     cx,
                     Data::params,
                     |p| &p.compressors.downwards.ratio,
-                    "SHARPNESS",
+                    "RATIO",
                     "coral",
                 );
                 labeled_bar(
                     cx,
                     Data::params,
                     |p| &p.compressors.downwards.knee_width_db,
-                    "SELECTIVITY",
+                    "KNEE",
                     "coral",
                 );
             })
@@ -628,7 +630,7 @@ fn banks(cx: &mut Context) {
         frame(cx, "OUTPUT", "steel", |cx| {
             HStack::new(cx, |cx| {
                 labeled_bar(cx, Data::params, |p| &p.global.dry_wet_ratio, "MIX", "steel");
-                labeled_bar(cx, Data::params, |p| &p.global.output_gain, "TRIM", "steel");
+                labeled_bar(cx, Data::params, |p| &p.global.output_gain, "OUTPUT", "steel");
             })
             .class("bars");
         })

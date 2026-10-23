@@ -19,15 +19,15 @@ pub const RANGE_UNLIMITED_DB: f32 = 30.0;
 /// a hard step where the band's influence fades out.
 const RANGE_FADE_DB: f32 = 60.0;
 
-/// What the brake does: pull peaks down, lift what is buried, or both at once.
+/// The compression mode: downward pulls peaks down, upward lifts what is buried, or both at once.
 #[derive(Enum, Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     #[default]
     #[id = "suppress"]
-    #[name = "Suppress"]
+    #[name = "Downward"]
     Suppress,
     #[id = "lift"]
-    #[name = "Lift"]
+    #[name = "Upward"]
     Lift,
     #[id = "both"]
     #[name = "Both"]
@@ -53,10 +53,10 @@ pub enum BandAction {
     #[name = "Auto"]
     Auto,
     #[id = "suppress"]
-    #[name = "Suppress"]
+    #[name = "Down"]
     Suppress,
     #[id = "lift"]
-    #[name = "Lift"]
+    #[name = "Up"]
     Lift,
     #[id = "off"]
     #[name = "Off"]
@@ -176,6 +176,17 @@ impl BandSettings {
             _ => 1.0,
         }
     }
+}
+
+/// A band's Q from its width in octaves, the way an analog EQ's bandwidth relates to its Q.
+pub fn q_from_octaves(octaves: f32) -> f32 {
+    let ratio = 2.0f32.powf(octaves);
+    ratio.sqrt() / (ratio - 1.0)
+}
+
+/// The inverse of [`q_from_octaves()`].
+pub fn octaves_from_q(q: f32) -> f32 {
+    2.0 * (1.0 / (2.0 * q)).asinh() / std::f32::consts::LN_2
 }
 
 #[inline]
@@ -329,6 +340,15 @@ mod tests {
         };
         params.bands[..bands.len()].copy_from_slice(bands);
         params
+    }
+
+    #[test]
+    fn q_and_octaves_convert_both_ways() {
+        // One octave is the textbook Q of 1.41
+        assert!((q_from_octaves(1.0) - 2.0f32.sqrt()).abs() < 1e-4);
+        for octaves in [0.05f32, 0.25, 1.0, 2.5] {
+            assert!((octaves_from_q(q_from_octaves(octaves)) - octaves).abs() < 1e-4);
+        }
     }
 
     #[test]
