@@ -28,11 +28,14 @@ use crate::curve::{Curve, NUM_NODES};
 use crate::OmhemillParams;
 
 /// The threshold curve is the thing you are actually shaping, so it is drawn in full ink.
-const THRESHOLD_CURVE_COLOR: vg::Color = vg::Color::rgbaf(0.098, 0.110, 0.106, 1.0);
-/// Node handles use the same burnt orange the reduction is drawn in.
-const NODE_COLOR: vg::Color = vg::Color::rgbaf(0.761, 0.322, 0.102, 1.0);
-const NODE_DISABLED_COLOR: vg::Color = vg::Color::rgbaf(0.553, 0.561, 0.545, 1.0);
-const NODE_RADIUS: f32 = 8.0;
+const THRESHOLD_CURVE_COLOR: vg::Color = vg::Color::rgbaf(0.925, 0.910, 0.875, 1.0);
+/// Band handles are coral, the colour of detection.
+const NODE_COLOR: vg::Color = vg::Color::rgbaf(0.929, 0.506, 0.349, 1.0);
+const NODE_DISABLED_COLOR: vg::Color = vg::Color::rgbaf(0.925, 0.910, 0.875, 0.38);
+/// The stage the spectrum sits on, used to punch the number out of a filled handle.
+const STAGE_COLOR: vg::Color = vg::Color::rgbaf(0.125, 0.122, 0.118, 1.0);
+/// Half the side of a (square) band handle.
+const NODE_RADIUS: f32 = 10.0;
 
 // We'll show the bins from 30 Hz (to your chest) to 22 kHz, scaled logarithmically
 #[allow(unused)]
@@ -43,18 +46,11 @@ const LN_FREQ_RANGE_START_HZ: f32 = 3.4011974; // 30.0f32.ln();
 const LN_FREQ_RANGE_END_HZ: f32 = 9.998797; // 22_000.0f32.ln();
 const LN_FREQ_RANGE: f32 = LN_FREQ_RANGE_END_HZ - LN_FREQ_RANGE_START_HZ;
 
-/// The color used for drawing the overlay. Currently not configurable using the style sheet (that
-/// would be possible by moving this to a dedicated view and overlaying that).
-///
-/// # Notes
-///
-/// This is drawn using some blending options that make it interact differently with darker
-/// backgrounds.
-const GR_BAR_OVERLAY_COLOR: vg::Color = vg::Color::rgbaf(0.949, 0.788, 0.678, 0.8);
+/// The gain change overlay. Amber is reserved for live state: this is the brake working right now.
+const GR_BAR_OVERLAY_COLOR: vg::Color = vg::Color::rgbaf(0.851, 0.639, 0.161, 0.72);
 
-/// The color used for drawing the upwards compression threshold curve. Slightly color to make to
-/// make the output look less confusing.
-const UPWARDS_THRESHOLD_CURVE_COLOR: vg::Color = vg::Color::rgbaf(0.059, 0.478, 0.447, 0.9);
+/// The upwards compression threshold curve, drawn as a fainter ink so the two curves read apart.
+const UPWARDS_THRESHOLD_CURVE_COLOR: vg::Color = vg::Color::rgbaf(0.925, 0.910, 0.875, 0.45);
 
 /// A very analyzer showing the envelope followers as a magnitude spectrum with an overlay for the
 /// gain reduction.
@@ -322,8 +318,11 @@ impl Analyzer {
             return Some(font);
         }
 
+        // The same monospace face the stylesheet asks for. It is a system font, so fall back to
+        // the bundled Noto Sans where it is not installed.
         let font = canvas
-            .add_font_mem(nih_plug_vizia::assets::fonts::NOTO_SANS_REGULAR)
+            .add_font("/System/Library/Fonts/Menlo.ttc")
+            .or_else(|_| canvas.add_font_mem(nih_plug_vizia::assets::fonts::NOTO_SANS_REGULAR))
             .ok()?;
         self.font.set(Some(font));
 
@@ -336,10 +335,10 @@ impl Analyzer {
         let scale = cx.scale_factor();
 
         let ink: vg::Color = cx.border_color().into();
-        let grid_paint = vg::Paint::color(vg::Color::rgbaf(ink.r, ink.g, ink.b, 0.22))
+        let grid_paint = vg::Paint::color(vg::Color::rgbaf(ink.r, ink.g, ink.b, 0.07))
             .with_line_width(scale);
 
-        let label_color = vg::Color::rgbaf(ink.r, ink.g, ink.b, 0.55);
+        let label_color = vg::Color::rgbaf(ink.r, ink.g, ink.b, 0.45);
         let font = self.font(canvas);
 
         for (freq, label) in [
@@ -407,14 +406,16 @@ impl Analyzer {
         let bounds = cx.bounds();
         let scale = cx.scale_factor();
         let spectrum_color: vg::Color = cx.font_color().into();
+        let ink: vg::Color = cx.border_color().into();
+        let ink = vg::Color::rgbaf(ink.r, ink.g, ink.b, 1.0);
 
         let entries = [
-            ("REDUCTION", NODE_COLOR),
+            ("REDUCTION", vg::Color::rgbaf(0.851, 0.639, 0.161, 1.0)),
             ("THRESHOLD", THRESHOLD_CURVE_COLOR),
             ("SPECTRUM", spectrum_color),
         ];
 
-        let mut paint = vg::Paint::color(spectrum_color);
+        let mut paint = vg::Paint::color(ink);
         paint.set_font(&[font]);
         paint.set_font_size(9.0 * scale);
         paint.set_text_align(vg::Align::Right);
@@ -425,12 +426,7 @@ impl Analyzer {
 
         for (label, color) in entries {
             let mut text_paint = paint.clone();
-            text_paint.set_color(vg::Color::rgbaf(
-                spectrum_color.r,
-                spectrum_color.g,
-                spectrum_color.b,
-                0.85,
-            ));
+            text_paint.set_color(vg::Color::rgbaf(ink.r, ink.g, ink.b, 0.55));
             let text_width = canvas
                 .fill_text(right, y, label, &text_paint)
                 .map(|metrics| metrics.width())
@@ -478,15 +474,13 @@ impl Analyzer {
                 );
             }
 
+            // Square, like every other corner in the system
             let mut handle = vg::Path::new();
-            handle.arc(x, y, radius, 0.0, std::f32::consts::PI * 2.0, vg::Solidity::Solid);
+            handle.rect(x - radius, y - radius, radius * 2.0, radius * 2.0);
             if enabled {
                 canvas.fill_path(&handle, &vg::Paint::color(color));
             } else {
-                canvas.fill_path(
-                    &handle,
-                    &vg::Paint::color(vg::Color::rgbaf(0.969, 0.965, 0.953, 1.0)),
-                );
+                canvas.fill_path(&handle, &vg::Paint::color(STAGE_COLOR));
             }
             canvas.stroke_path(
                 &handle,
@@ -494,15 +488,11 @@ impl Analyzer {
             );
 
             if let Some(font) = font {
-                let text_color = if enabled {
-                    vg::Color::rgbaf(0.949, 0.945, 0.925, 1.0)
-                } else {
-                    color
-                };
+                let text_color = if enabled { STAGE_COLOR } else { color };
 
                 let mut paint = vg::Paint::color(text_color);
                 paint.set_font(&[font]);
-                paint.set_font_size(10.0 * scale);
+                paint.set_font_size(11.0 * scale);
                 paint.set_text_align(vg::Align::Center);
                 paint.set_text_baseline(vg::Baseline::Middle);
                 let _ = canvas.fill_text(x, y, format!("{}", idx + 1), &paint);
@@ -751,8 +741,5 @@ fn draw_gain_reduction(
         path.close();
     }
 
-    canvas
-        .global_composite_blend_func(vg::BlendFactor::DstAlpha, vg::BlendFactor::OneMinusDstColor);
     canvas.fill_path(&path, &paint);
-    canvas.global_composite_blend_func(vg::BlendFactor::One, vg::BlendFactor::OneMinusSrcAlpha);
 }

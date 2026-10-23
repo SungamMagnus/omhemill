@@ -184,7 +184,7 @@ pub enum ThresholdMode {
     /// Configure the thresholds to offset pink noise. This means that the slope will receive an
     /// additional -3 dB/octave slope.
     #[id = "internal"]
-    #[name = "Pink"]
+    #[name = "Self"]
     Internal,
     /// Dynamically reconfigure the thresholds based on a sidechain input. The -3 dB/octave slope
     /// offset is not applied here so the curve stays true to the sidechain input at the default
@@ -193,13 +193,13 @@ pub enum ThresholdMode {
     /// how how much of the other channel values to mix in before multiplying the sidechain gain
     /// values with the thresholds.
     #[id = "sidechain"]
-    #[name = "SC Match"]
+    #[name = "Sidechain"]
     SidechainMatch,
     /// Compress the input signal based on the sidechain signal's activity. Can be used to
     /// spectrally duck the input, or to amplify parts of the input based on holes in the sidechain
     /// signal.
     #[id = "sidechain_compress"]
-    #[name = "SC Duck"]
+    #[name = "Duck"]
     SidechainCompress,
 }
 

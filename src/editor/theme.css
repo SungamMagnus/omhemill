@@ -1,230 +1,285 @@
-/* Ómhemill — the Sungam plugin palette: cream paper, ink rules, one accent per bank. */
+/* Ómhemill — the Sungam design system, graphite edition: the same tokens as Beygla
+   (SungamKit.swift) and Samplebrain (Sungam.h), so the plugin sits beside them.
+
+   Colour is signal and never decoration. Backgrounds are flat paper, type is one monospace face,
+   corners are square, and borders are hairlines at partial ink opacity.
+
+     paper  #2e2d2b   panels                ink    #ece8df   text and rules
+     stage  #201f1e   behind the spectrum
+
+   Ómhemill's signal assignment:
+
+     coral  #ed8159   detection and the bands — what gets braked, and how hard
+     teal   #52b0a4   time
+     steel  #6695c2   output
+     amber  #d9a329   live state only: braking right now
+     violet #8c7de0   the sidechain, a signal moving the thresholds
+     lilac  #d3a7dc   trims subordinate to another control (reserved for the band trims) */
 
 :root {
-  background-color: #f2f1ec;
-  color: #191c1b;
-  font-size: 13;
-  font-weight: light;
+  background-color: #2e2d2b;
+  color: #ece8df;
+  font-family: "Menlo", "DejaVu Sans Mono", "Consolas";
+  font-size: 12;
 }
 
-.frame {
-  child-space: 16px;
-  row-between: 12px;
-  background-color: #f2f1ec;
-}
-
-/* ── header ────────────────────────────────────────────────────────── */
-
-.header {
-  child-bottom: 6px;
-  col-between: 12px;
+.frame-root {
+  background-color: #2e2d2b;
 }
 
 /* vizia has no per-side border properties, so rules are their own elements */
 .divider {
   height: 1px;
   width: 1s;
-  background-color: #dcdbd4;
+  background-color: #ece8df21;
 }
 
+/* ── header ────────────────────────────────────────────────────────── */
+
+.header {
+  height: 64px;
+  child-left: 32px;
+  child-right: 32px;
+  col-between: 22px;
+}
+
+/* Letter-spacing is not available, so the wordmark's tracking is one label per letter */
 .wordmark {
-  font-size: 26;
-  color: #191c1b;
+  width: auto;
+  height: auto;
   top: 1s;
   bottom: 1s;
+  col-between: 5px;
+}
+.wordmark label {
+  font-size: 20;
+  font-weight: bold;
+  color: #ece8df8c;
+  width: auto;
 }
 
-.tagline {
-  font-size: 12;
-  color: #8d8f8b;
+.field {
+  width: auto;
+  height: auto;
   top: 1s;
-  bottom: 4px;
+  bottom: 1s;
+  row-between: 4px;
 }
 
-.strip-label {
+/* Small caps captions over every control: upper case, there being no letter-spacing */
+.cap,
+.bar-name {
   font-size: 10;
-  color: #8d8f8b;
-  top: 1s;
-  bottom: 1s;
+  color: #ece8df9e;
+  height: 13px;
 }
 
-.mode-slider {
-  width: 330px;
-  height: 26px;
+/* ── segmented selectors ───────────────────────────────────────────── */
+
+.segmented {
+  height: 28px;
+  width: auto;
+}
+
+segment-button {
+  height: 28px;
+  width: auto;
+  child-left: 12px;
+  child-right: 12px;
+  child-top: 1s;
+  child-bottom: 1s;
+  border-width: 1px;
+  border-color: #ece8df47;
+  background-color: #00000000;
+  color: #ece8dfd9;
   font-size: 11;
-  top: 1s;
-  bottom: 1s;
+  left: -1px;
+}
+segment-button:hover {
+  border-color: #ece8df8c;
+}
+segment-button:checked {
+  background-color: #ece8df;
+  border-color: #ece8df;
+  color: #201f1e;
+}
+segment-button.violet:checked {
+  background-color: #8c7de0;
+  border-color: #8c7de0;
+}
+segment-button.coral:checked {
+  background-color: #ed8159;
+  border-color: #ed8159;
 }
 
-/* The resize handle lives in the bottom right corner. Give it a bit more presence and a
-   larger grab area than the stock 20x20 so it is actually findable. */
-resize-handle {
-  color: #191c1b;
-  width: 26px;
-  height: 26px;
-  opacity: 0.35;
+/* ── frames ────────────────────────────────────────────────────────── */
+
+/* A section drawn as the box its controls sit inside: a hairline in the section colour, with the
+   title inset into the rule. */
+.frame {
+  border-width: 1px;
+  child-left: 16px;
+  child-right: 16px;
+  child-top: 18px;
+  child-bottom: 14px;
 }
-resize-handle:hover,
-resize-handle:active {
-  opacity: 0.8;
+
+.frame-title {
+  position-type: self-directed;
+  top: -8px;
+  left: 14px;
+  height: 15px;
+  width: auto;
+  child-left: 6px;
+  child-right: 6px;
+  font-size: 11;
+  background-color: #2e2d2b;
 }
+
+.frame.coral { border-color: #ed8159; }
+.frame.teal { border-color: #52b0a4; }
+.frame.steel { border-color: #6695c2; }
+.frame-title.coral { color: #ed8159; }
+.frame-title.teal { color: #52b0a4; }
+.frame-title.steel { color: #6695c2; }
 
 /* ── display ───────────────────────────────────────────────────────── */
 
-.display,
+/* The analyzer reads its colours from here: ink from `border-color` (grid and labels are drawn
+   at their own partial opacities), and the spectrum from `color`. */
 analyzer {
-  background-color: #f7f6f3;
-  border-color: #191c1b;
+  background-color: #201f1e;
+  border-color: #ece8df21;
   border-width: 1px;
-  color: #8d8f8b;
+  color: #4a4845;
 }
 
-/* ── node strip ────────────────────────────────────────────────────── */
+/* ── band chips ────────────────────────────────────────────────────── */
 
-.strip {
-  child-bottom: 4px;
+.chips {
+  height: 30px;
+  top: 12px;
+  col-between: 6px;
 }
 
-.node-cell {
-  child-left: 10px;
+.chip {
+  height: 30px;
+  border-width: 1px;
+  border-color: #ed815959;
+  child-left: 6px;
+  child-right: 10px;
+  col-between: 8px;
 }
 
-.node-freq {
-  font-size: 12;
-  color: #191c1b;
+.chip-freq,
+.chip-depth {
+  font-size: 11;
+  color: #ece8df8c;
+  width: auto;
   top: 1s;
   bottom: 1s;
 }
-
-.node-depth {
-  font-size: 10;
-  color: #8d8f8b;
+.chip-freq {
+  color: #ece8dfcc;
 }
 
-param-button.node-dot {
-  width: 19px;
-  height: 19px;
+param-button.chip-dot {
+  width: 18px;
+  height: 18px;
+  top: 1s;
+  bottom: 1s;
   child-space: 1s;
-  font-size: 9;
+  font-size: 10;
+  font-weight: bold;
   border-width: 1px;
-  border-color: #8d8f8b;
-  color: #8d8f8b;
+  border-color: #ece8df61;
+  color: #ece8df8c;
   background-color: #00000000;
 }
-param-button.node-dot:hover {
-  background-color: #c2521a20;
+param-button.chip-dot:hover {
+  border-color: #ed8159;
+  background-color: #ed815924;
 }
-param-button.node-dot:checked {
-  background-color: #c2521a;
-  border-color: #c2521a;
-  color: #f2f1ec;
+param-button.chip-dot:checked {
+  background-color: #ed8159;
+  border-color: #ed8159;
+  color: #201f1e;
 }
 
-/* ── banks ─────────────────────────────────────────────────────────── */
+/* ── bars ──────────────────────────────────────────────────────────── */
 
-.bank-rule {
-  height: 2px;
+.banks {
+  col-between: 20px;
+  height: auto;
+}
+
+.bars {
+  col-between: 10px;
+  height: auto;
+}
+
+.bar-cell {
+  height: auto;
+  row-between: 4px;
+}
+
+bar-slider {
+  height: 26px;
   width: 1s;
-  background-color: #191c1b;
+  background-color: #ece8df0a;
+  border-color: #ece8df38;
+}
+bar-slider:hover,
+bar-slider:active {
+  background-color: #ece8df14;
 }
 
-.bank-title {
-  font-size: 11;
-  color: #191c1b;
+.bar-value {
+  width: 1s;
+  height: 1s;
+  child-left: 8px;
+  child-right: 1s;
+  child-top: 1s;
+  child-bottom: 1s;
+  font-size: 12;
+  font-weight: bold;
 }
 
-.bank-sub {
-  font-size: 9;
-  color: #b0b1ac;
-  top: 1s;
-  bottom: 1s;
-}
-
-.rule-detect { background-color: #c2521a; color: #c2521a; }
-.rule-shape { background-color: #2e4b8f; color: #2e4b8f; }
-.rule-time { background-color: #0f7a72; color: #0f7a72; }
-.rule-spectrum { background-color: #a8285a; color: #a8285a; }
-.rule-output { background-color: #191c1b; color: #191c1b; }
-
-/* Labels pick up `color` from the rule classes above, but must not paint a background */
-label.bank-title {
-  background-color: #00000000;
-}
-
-/* ── knobs ─────────────────────────────────────────────────────────── */
-
-knob-dial {
-  background-color: #f7f6f3;
-  border-color: #191c1b;
-}
-
-.knob-cell {
-  child-space: 1px;
-}
-
-.knob-value {
-  font-size: 11;
-  color: #191c1b;
-  top: 3px;
-}
-
-.knob-name {
-  font-size: 9;
-  color: #8d8f8b;
-}
+bar-slider.coral { color: #ed8159; }
+bar-slider.teal { color: #52b0a4; }
+bar-slider.steel { color: #6695c2; }
+bar-slider.ink { color: #ece8df; }
 
 /* ── footer ────────────────────────────────────────────────────────── */
 
 .footer {
-  child-top: 2px;
-  col-between: 8px;
+  height: 34px;
+  child-left: 32px;
+  child-right: 32px;
+  col-between: 18px;
 }
 
-.footer-label {
-  font-size: 9;
-  color: #b0b1ac;
+.footer label {
+  font-size: 11;
+  color: #ece8df80;
+  width: auto;
   top: 1s;
   bottom: 1s;
 }
 
-.footer-value {
-  font-size: 10;
-  color: #191c1b;
-  top: 1s;
-  bottom: 1s;
+.footer .footer-value {
+  color: #ece8dfb3;
 }
 
-/* ── stock widgets, recoloured ─────────────────────────────────────── */
-
-param-slider {
-  border-color: #191c1b;
-  background-color: #00000000;
+/* The resize handle lives in the bottom right corner. Give it a bit more presence and a larger
+   grab area than the stock 20x20 so it is actually findable. */
+resize-handle {
+  color: #ece8df;
+  width: 22px;
+  height: 22px;
+  opacity: 0.3;
 }
-param-slider:active,
-param-slider:hover {
-  background-color: #191c1b0d;
-}
-param-slider .fill {
-  background-color: #c2521a;
-}
-param-slider .fill--modulation {
-  background-color: #c2521a55;
-}
-param-slider .value-entry .caret {
-  background-color: #191c1b;
-}
-param-slider .value-entry .selection {
-  background-color: #191c1b30;
-}
-
-param-button {
-  border-color: #191c1b;
-  background-color: #00000000;
-}
-param-button:hover {
-  background-color: #191c1b12;
-}
-param-button:checked {
-  background-color: #191c1b;
-  color: #f2f1ec;
+resize-handle:hover,
+resize-handle:active {
+  opacity: 0.7;
 }
