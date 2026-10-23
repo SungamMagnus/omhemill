@@ -21,16 +21,17 @@ use atomic_float::AtomicF32;
 use crossbeam::atomic::AtomicCell;
 use nih_plug::prelude::*;
 use nih_plug_vizia::vizia::prelude::*;
-use nih_plug_vizia::widgets::param_base::ParamWidgetBase;
 use nih_plug_vizia::widgets::*;
 use nih_plug_vizia::{create_vizia_editor, ViziaState, ViziaTheming};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use self::analyzer::Analyzer;
-use self::controls::{labeled_bar, segmented, BarSlider, SegmentButton, ShapeIcon};
+use self::controls::{labeled_bar, segmented, ResolutionButton, SegmentButton, ShapeIcon};
 use crate::analyzer::AnalyzerData;
 use crate::curve::{BandShape, Curve, NUM_BANDS};
+use crate::presets::{self, Preset};
 use crate::OmhemillParams;
 
 mod analyzer;
@@ -60,6 +61,15 @@ pub struct Data {
     pub(crate) sample_rate: Arc<AtomicF32>,
     /// The band whose panel is open, if any. Shared by the display and the chips.
     pub(crate) selected_band: Option<usize>,
+    /// The band being soloed, if any. Mirrored into [`OmhemillParams::solo_band`] for the audio
+    /// thread.
+    pub(crate) solo_band: Option<usize>,
+    /// The factory presets followed by the user's own. Loaded when the editor opens.
+    pub(crate) presets: Vec<Preset>,
+    /// The preset last loaded or saved, if any.
+    pub(crate) preset_index: Option<usize>,
+    /// What the preset field shows, and the name a save uses.
+    pub(crate) preset_name: String,
 }
 
 /// Selecting a band opens its panel; selecting nothing closes it.
@@ -67,10 +77,112 @@ pub enum BandSelection {
     Select(Option<usize>),
 }
 
+/// Soloing a band plays only its range.
+pub enum SoloEvent {
+    /// Solo the band, or stop soloing it if it already is.
+    Toggle(usize),
+    Set(Option<usize>),
+}
+
+pub enum PresetEvent {
+    Previous,
+    Next,
+    /// The preset field was edited.
+    Rename(String),
+    /// Save the current state as a user preset under the name in the preset field.
+    Save,
+}
+
+impl Data {
+    fn set_preset_name(&mut self, name: String) {
+        *self.params.preset_name.lock().unwrap() = name.clone();
+        self.preset_name = name;
+    }
+
+    fn set_solo(&mut self, solo_band: Option<usize>) {
+        self.solo_band = solo_band;
+        self.params.solo_band.store(
+            solo_band.map(|idx| idx as i32).unwrap_or(-1),
+            Ordering::Relaxed,
+        );
+    }
+
+    /// Load a preset: every parameter it mentions, and every other one back to its default.
+    fn load_preset(&mut self, cx: &mut EventContext, idx: usize) {
+        let Some(preset) = self.presets.get(idx) else {
+            return;
+        };
+
+        for (ptr, value) in presets::values_to_apply(&self.params, preset) {
+            cx.emit(RawParamEvent::BeginSetParameter(ptr));
+            cx.emit(RawParamEvent::SetParameterNormalized(ptr, value));
+            cx.emit(RawParamEvent::EndSetParameter(ptr));
+        }
+
+        self.preset_index = Some(idx);
+        let name = preset.name.clone();
+        self.set_preset_name(name);
+        self.selected_band = None;
+        self.set_solo(None);
+    }
+
+    /// Save the current state as a user preset. A factory preset's name gets " copy" added so the
+    /// factory set stays as it ships.
+    fn save_preset(&mut self) {
+        let mut name = self.preset_name.trim().to_owned();
+        if name.is_empty() {
+            name = String::from("Untitled");
+        }
+        if self.presets.iter().any(|preset| preset.factory && preset.name == name) {
+            name.push_str(" copy");
+        }
+
+        let preset = presets::capture(&self.params, &name);
+        if let Err(err) = presets::save_user(&preset) {
+            nih_error!("Could not save the preset {name:?}: {err}");
+            return;
+        }
+
+        self.presets = presets::all(&self.params);
+        self.preset_index = self
+            .presets
+            .iter()
+            .position(|preset| !preset.factory && preset.name == name);
+        self.set_preset_name(name);
+    }
+}
+
 impl Model for Data {
-    fn event(&mut self, _cx: &mut EventContext, event: &mut Event) {
+    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
         event.map(|selection, _| match selection {
             BandSelection::Select(selected_band) => self.selected_band = *selected_band,
+        });
+
+        event.map(|solo, _| match solo {
+            SoloEvent::Toggle(idx) => {
+                let solo_band = if self.solo_band == Some(*idx) {
+                    None
+                } else {
+                    Some(*idx)
+                };
+                self.set_solo(solo_band);
+            }
+            SoloEvent::Set(solo_band) => self.set_solo(*solo_band),
+        });
+
+        event.map(|preset_event, _| match preset_event {
+            PresetEvent::Previous | PresetEvent::Next if !self.presets.is_empty() => {
+                let count = self.presets.len();
+                let idx = match (self.preset_index, preset_event) {
+                    (Some(idx), PresetEvent::Previous) => (idx + count - 1) % count,
+                    (Some(idx), _) => (idx + 1) % count,
+                    (None, _) => 0,
+                };
+                self.load_preset(cx, idx);
+            }
+            PresetEvent::Previous | PresetEvent::Next => (),
+            PresetEvent::Rename(name) => self.set_preset_name(name.clone()),
+            PresetEvent::Save => self.save_preset(),
         });
     }
 }
@@ -85,15 +197,19 @@ pub(crate) fn create(editor_state: Arc<ViziaState>, editor_data: Data) -> Option
             nih_error!("Failed to load stylesheet: {err:?}")
         }
 
-        editor_data.clone().build(cx);
+        let mut data = editor_data.clone();
+        data.presets = presets::all(&data.params);
+        data.preset_index = data
+            .presets
+            .iter()
+            .position(|preset| preset.name == data.preset_name);
+        data.build(cx);
 
         VStack::new(cx, |cx| {
             header(cx);
             Element::new(cx).class("divider");
             bands(cx);
             banks(cx);
-            Element::new(cx).class("divider");
-            footer(cx);
         })
         .class("frame-root");
 
@@ -119,7 +235,17 @@ fn frame<'a>(
     .class(accent)
 }
 
-/// The wordmark, what the brake does and what it listens to, then the STFT settings on the right.
+/// A caption over a header control.
+fn field(cx: &mut Context, caption: &str, contents: impl FnOnce(&mut Context)) {
+    VStack::new(cx, |cx| {
+        Label::new(cx, caption).class("cap");
+        contents(cx);
+    })
+    .class("field");
+}
+
+/// The wordmark, the presets, what the brake does and what it listens to, then resolution and
+/// the two monitoring switches on the right. Every control is the same height as a segment.
 fn header(cx: &mut Context) {
     HStack::new(cx, |cx| {
         HStack::new(cx, |cx| {
@@ -129,8 +255,25 @@ fn header(cx: &mut Context) {
         })
         .class("wordmark");
 
-        VStack::new(cx, |cx| {
-            Label::new(cx, "ACTION").class("cap");
+        field(cx, "PRESET", |cx| {
+            HStack::new(cx, |cx| {
+                Button::new(cx, |cx| cx.emit(PresetEvent::Previous), |cx| Label::new(cx, "<"))
+                    .class("header-button")
+                    .class("preset-step");
+                Textbox::new(cx, Data::preset_name)
+                    .on_edit(|cx, name| cx.emit(PresetEvent::Rename(name)))
+                    .on_submit(|cx, name, _| cx.emit(PresetEvent::Rename(name)))
+                    .class("preset-name");
+                Button::new(cx, |cx| cx.emit(PresetEvent::Next), |cx| Label::new(cx, ">"))
+                    .class("header-button")
+                    .class("preset-step");
+                Button::new(cx, |cx| cx.emit(PresetEvent::Save), |cx| Label::new(cx, "SAVE"))
+                    .class("header-button");
+            })
+            .class("segmented");
+        });
+
+        field(cx, "ACTION", |cx| {
             segmented(
                 cx,
                 Data::params,
@@ -138,11 +281,9 @@ fn header(cx: &mut Context) {
                 &["SUPPRESS", "LIFT", "BOTH"],
                 "coral",
             );
-        })
-        .class("field");
+        });
 
-        VStack::new(cx, |cx| {
-            Label::new(cx, "LISTEN TO").class("cap");
+        field(cx, "LISTEN TO", |cx| {
             segmented(
                 cx,
                 Data::params,
@@ -150,27 +291,27 @@ fn header(cx: &mut Context) {
                 &["SELF", "SIDECHAIN", "DUCK"],
                 "violet",
             );
-        })
-        .class("field");
+        });
 
-        // Pushes the STFT settings over to the right
+        // Pushes the rest over to the right
         Element::new(cx).width(Stretch(1.0)).height(Pixels(0.0));
 
-        VStack::new(cx, |cx| {
-            Label::new(cx, "RESOLUTION").class("cap");
-            BarSlider::new(cx, Data::params, |p| &p.global.window_size_order)
-                .class("ink")
-                .width(Pixels(132.0));
-        })
-        .class("field");
+        field(cx, "RESOLUTION", |cx| {
+            ResolutionButton::new(cx);
+        });
 
-        VStack::new(cx, |cx| {
-            Label::new(cx, "OVERLAP").class("cap");
-            BarSlider::new(cx, Data::params, |p| &p.global.overlap_times_order)
-                .class("ink")
-                .width(Pixels(84.0));
-        })
-        .class("field");
+        field(cx, " ", |cx| {
+            HStack::new(cx, |cx| {
+                ParamButton::new(cx, Data::params, |p| &p.global.delta)
+                    .with_label("DELTA")
+                    .class("header-toggle")
+                    .class("amber");
+                ParamButton::new(cx, Data::params, |p| &p.global.bypass)
+                    .with_label("BYPASS")
+                    .class("header-toggle");
+            })
+            .class("toggles");
+        });
     })
     .class("header");
 }
@@ -217,8 +358,10 @@ fn band_chips(cx: &mut Context) {
                         let freq = p.threshold.bands[idx].frequency.value();
                         if freq < 1_000.0 {
                             format!("{freq:.0} Hz")
-                        } else {
+                        } else if freq < 10_000.0 {
                             format!("{:.2}k", freq / 1_000.0)
+                        } else {
+                            format!("{:.1}k", freq / 1_000.0)
                         }
                     }),
                 )
@@ -234,7 +377,7 @@ fn band_chips(cx: &mut Context) {
                             BandShape::HighCut => String::from("HI CUT"),
                             BandShape::LowShelf => format!("LS {sensitivity_db:+.1}"),
                             BandShape::HighShelf => format!("HS {sensitivity_db:+.1}"),
-                            BandShape::Bell => format!("{sensitivity_db:+.1} dB"),
+                            BandShape::Bell => format!("{sensitivity_db:+.1}"),
                         }
                     }),
                 )
@@ -330,6 +473,14 @@ fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, VStack> {
 
             Button::new(
                 cx,
+                move |cx| cx.emit(SoloEvent::Toggle(idx)),
+                |cx| Label::new(cx, "SOLO"),
+            )
+            .class("panel-solo")
+            .checked(Data::solo_band.map(move |solo_band| *solo_band == Some(idx)));
+
+            Button::new(
+                cx,
                 |cx| cx.emit(BandSelection::Select(None)),
                 |cx| Label::new(cx, "×"),
             )
@@ -375,14 +526,19 @@ fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, VStack> {
                 )
                 .class("panel-note");
             } else {
+                // These scale the global controls inside this band only
                 VStack::new(cx, move |cx| {
-                    Element::new(cx).class("trim-rule");
+                    HStack::new(cx, |cx| {
+                        Label::new(cx, "THIS BAND ONLY").class("trims-title");
+                        Element::new(cx).class("trim-rule");
+                    })
+                    .class("trims-heading");
                     HStack::new(cx, move |cx| {
                         labeled_bar(
                             cx,
                             Data::params,
                             move |p| &p.threshold.bands[idx].sharp,
-                            "SHARP",
+                            "SHARPNESS",
                             "lilac",
                         );
                         labeled_bar(
@@ -396,7 +552,7 @@ fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, VStack> {
                             cx,
                             Data::params,
                             move |p| &p.threshold.bands[idx].range_db,
-                            "RANGE",
+                            "MAX CHANGE",
                             "lilac",
                         );
                         VStack::new(cx, move |cx| {
@@ -483,42 +639,5 @@ fn banks(cx: &mut Context) {
     .child_left(Pixels(32.0))
     .child_right(Pixels(32.0))
     .child_top(Pixels(24.0))
-    .child_bottom(Pixels(14.0));
-}
-
-/// What the STFT is actually doing, so the cost of the current settings is visible.
-fn footer(cx: &mut Context) {
-    HStack::new(cx, |cx| {
-        Label::new(cx, "FFT");
-        Label::new(
-            cx,
-            ParamWidgetBase::make_lens(
-                Data::params,
-                |p| &p.global.window_size_order,
-                |param| {
-                    param.normalized_value_to_string(param.unmodulated_normalized_value(), true)
-                },
-            ),
-        )
-        .class("footer-value");
-
-        Label::new(cx, "OVERLAP");
-        Label::new(
-            cx,
-            ParamWidgetBase::make_lens(
-                Data::params,
-                |p| &p.global.overlap_times_order,
-                |param| {
-                    param.normalized_value_to_string(param.unmodulated_normalized_value(), true)
-                },
-            ),
-        )
-        .class("footer-value");
-
-        Element::new(cx).width(Stretch(1.0)).height(Pixels(0.0));
-
-        Label::new(cx, "ÓMHEMILL");
-        Label::new(cx, crate::Omhemill::VERSION).class("footer-value");
-    })
-    .class("footer");
+    .child_bottom(Pixels(20.0));
 }

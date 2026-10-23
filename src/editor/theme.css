@@ -40,7 +40,7 @@
   height: 64px;
   child-left: 32px;
   child-right: 32px;
-  col-between: 22px;
+  col-between: 18px;
 }
 
 /* Letter-spacing is not available, so the wordmark's tracking is one label per letter */
@@ -112,6 +112,90 @@ segment-button.coral:checked {
   border-color: #ed8159;
 }
 
+/* Header buttons, toggles and the resolution stepper all share the segment's size, so the header
+   reads as one row of equal controls */
+button.header-button,
+resolution-button,
+param-button.header-toggle {
+  height: 28px;
+  width: auto;
+  child-left: 12px;
+  child-right: 12px;
+  child-top: 1s;
+  child-bottom: 1s;
+  border-width: 1px;
+  border-color: #ece8df47;
+  background-color: #00000000;
+  color: #ece8dfd9;
+  font-size: 11;
+  left: -1px;
+}
+button.header-button:hover,
+resolution-button:hover,
+param-button.header-toggle:hover {
+  border-color: #ece8df8c;
+  background-color: #00000000;
+}
+button.header-button:active {
+  background-color: #ece8df1a;
+}
+button.preset-step {
+  child-left: 9px;
+  child-right: 9px;
+}
+resolution-button {
+  left: 0px;
+  width: 96px;
+}
+
+.toggles {
+  height: 28px;
+  width: auto;
+  col-between: 8px;
+}
+param-button.header-toggle {
+  left: 0px;
+}
+param-button.header-toggle:checked {
+  background-color: #ece8df;
+  border-color: #ece8df;
+  color: #201f1e;
+}
+/* Amber is live state: Delta changes what you hear */
+param-button.header-toggle.amber {
+  border-color: #d9a329;
+  color: #d9a329;
+}
+param-button.header-toggle.amber:checked {
+  background-color: #d9a329;
+  color: #201f1e;
+}
+
+/* The preset name, editable in place */
+textbox.preset-name {
+  width: 140px;
+  height: 28px;
+  left: -1px;
+  child-left: 10px;
+  child-right: 10px;
+  child-top: 1s;
+  child-bottom: 1s;
+  border-width: 1px;
+  border-color: #ece8df47;
+  background-color: #ece8df0a;
+  color: #ece8df;
+  font-size: 11;
+}
+textbox.preset-name:focus {
+  border-color: #ece8df8c;
+}
+textbox .caret {
+  background-color: #ece8df;
+}
+textbox .selection {
+  background-color: #ece8df40;
+}
+
 /* ── frames ────────────────────────────────────────────────────────── */
 
 /* A section drawn as the box its controls sit inside: a hairline in the section colour, with the
@@ -167,13 +251,17 @@ analyzer {
   border-width: 1px;
   border-color: #ed815959;
   child-left: 6px;
-  child-right: 10px;
-  col-between: 8px;
+  child-right: 6px;
+  col-between: 6px;
+}
+
+.chip {
+  overflow: hidden;
 }
 
 .chip-freq,
 .chip-depth {
-  font-size: 11;
+  font-size: 10;
   color: #ece8df8c;
   width: auto;
   top: 1s;
@@ -219,7 +307,7 @@ param-button.chip-dot:checked {
 }
 
 .band-panel {
-  width: 396px;
+  width: 440px;
   height: auto;
   background-color: #2e2d2b;
   border-width: 1px;
@@ -293,6 +381,27 @@ button.panel-close:hover {
   border-color: #ece8df8c;
 }
 
+/* Soloing is live state, so it is amber */
+button.panel-solo {
+  height: 24px;
+  width: auto;
+  top: 1s;
+  bottom: 1s;
+  child-left: 8px;
+  child-right: 8px;
+  child-top: 1s;
+  child-bottom: 1s;
+  border-width: 1px;
+  border-color: #d9a329;
+  background-color: #00000000;
+  color: #d9a329;
+  font-size: 10;
+}
+button.panel-solo:checked {
+  background-color: #d9a329;
+  color: #201f1e;
+}
+
 .panel-note {
   font-size: 10;
   color: #ece8df8c;
@@ -305,9 +414,22 @@ button.panel-close:hover {
   row-between: 8px;
 }
 
+.trims-heading {
+  height: 13px;
+  col-between: 8px;
+}
+
+.trims-title {
+  font-size: 10;
+  color: #bd8dce;
+  width: auto;
+}
+
 .trim-rule {
   height: 1px;
   width: 1s;
+  top: 1s;
+  bottom: 1s;
   background-color: #d3a7dc40;
 }
 
@@ -323,8 +445,8 @@ bar-slider.lilac {
 
 segment-button.lilac {
   height: 22px;
-  child-left: 7px;
-  child-right: 7px;
+  child-left: 5px;
+  child-right: 5px;
   font-size: 10;
   border-color: #d3a7dc66;
   color: #bd8dce;
@@ -378,27 +500,6 @@ bar-slider.coral { color: #ed8159; }
 bar-slider.teal { color: #52b0a4; }
 bar-slider.steel { color: #6695c2; }
 bar-slider.ink { color: #ece8df; }
-
-/* ── footer ────────────────────────────────────────────────────────── */
-
-.footer {
-  height: 34px;
-  child-left: 32px;
-  child-right: 32px;
-  col-between: 18px;
-}
-
-.footer label {
-  font-size: 11;
-  color: #ece8df80;
-  width: auto;
-  top: 1s;
-  bottom: 1s;
-}
-
-.footer .footer-value {
-  color: #ece8dfb3;
-}
 
 /* The resize handle lives in the bottom right corner. Give it a bit more presence and a larger
    grab area than the stock 20x20 so it is actually findable. */

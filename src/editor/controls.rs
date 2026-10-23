@@ -7,12 +7,14 @@
 //   default instead of from the left edge.
 // - `SegmentButton` is one cell of a segmented selector for a stepped parameter.
 // - `ShapeIcon` draws a band shape, for the shape picker's segment buttons.
+// - `ResolutionButton` sets the STFT window size and overlap together from a few named steps.
 //
 // The stock ParamSlider centres its value text with an inline style the stylesheet cannot
 // override, which is why the bar is its own widget.
 
 use nih_plug::prelude::Param;
 
+use super::Data;
 use crate::curve::BandShape;
 use nih_plug_vizia::vizia::prelude::*;
 use nih_plug_vizia::vizia::vg;
@@ -454,5 +456,96 @@ impl View for ShapeIcon {
             &path,
             &vg::Paint::color(color).with_line_width(1.5 * cx.scale_factor()),
         );
+    }
+}
+
+/// The named resolutions: `(name, window size order, overlap order)`. Finer resolution separates
+/// resonances more cleanly at the cost of latency and time smearing.
+const RESOLUTIONS: [(&str, i32, i32); 4] = [
+    ("FAST", 10, 3),
+    ("BALANCED", 11, 4),
+    ("FINE", 12, 4),
+    ("ULTRA", 13, 5),
+];
+
+/// One button for the STFT settings. A click steps to the next named resolution, a right-click to
+/// the previous one. Settings that match none of them (from automation, say) read as CUSTOM.
+pub struct ResolutionButton {
+    window_size_order: ParamWidgetBase,
+    overlap_times_order: ParamWidgetBase,
+}
+
+impl ResolutionButton {
+    pub fn new(cx: &mut Context) -> Handle<'_, Self> {
+        let name = Data::params.map(|p| {
+            let current = (
+                p.global.window_size_order.value(),
+                p.global.overlap_times_order.value(),
+            );
+            RESOLUTIONS
+                .iter()
+                .find(|(_, window, overlap)| (*window, *overlap) == current)
+                .map(|(name, _, _)| *name)
+                .unwrap_or("CUSTOM")
+        });
+
+        Self {
+            window_size_order: ParamWidgetBase::new(cx, Data::params, |p| {
+                &p.global.window_size_order
+            }),
+            overlap_times_order: ParamWidgetBase::new(cx, Data::params, |p| {
+                &p.global.overlap_times_order
+            }),
+        }
+        .build(cx, move |cx| {
+            Label::new(cx, name).class("segment-label").hoverable(false);
+        })
+    }
+
+    fn step(&self, cx: &mut EventContext, forwards: bool) {
+        let current = (
+            self.window_size_order.unmodulated_plain_value() as i32,
+            self.overlap_times_order.unmodulated_plain_value() as i32,
+        );
+        let count = RESOLUTIONS.len();
+        let idx = match RESOLUTIONS
+            .iter()
+            .position(|(_, window, overlap)| (*window, *overlap) == current)
+        {
+            Some(idx) if forwards => (idx + 1) % count,
+            Some(idx) => (idx + count - 1) % count,
+            // From a custom setting, go back to the default
+            None => 1,
+        };
+
+        let (_, window, overlap) = RESOLUTIONS[idx];
+        for (param, plain) in [
+            (&self.window_size_order, window),
+            (&self.overlap_times_order, overlap),
+        ] {
+            param.begin_set_parameter(cx);
+            param.set_normalized_value(cx, param.preview_normalized(plain as f32));
+            param.end_set_parameter(cx);
+        }
+    }
+}
+
+impl View for ResolutionButton {
+    fn element(&self) -> Option<&'static str> {
+        Some("resolution-button")
+    }
+
+    fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
+        event.map(|window_event, meta| match window_event {
+            WindowEvent::MouseDown(MouseButton::Left) => {
+                self.step(cx, true);
+                meta.consume();
+            }
+            WindowEvent::MouseDown(MouseButton::Right) => {
+                self.step(cx, false);
+                meta.consume();
+            }
+            _ => {}
+        });
     }
 }

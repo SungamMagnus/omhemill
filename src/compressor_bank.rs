@@ -118,6 +118,11 @@ pub struct CompressorBank {
     band_down_weights: Vec<f32>,
     /// The same as `band_down_weights`, for the upwards gain change.
     band_up_weights: Vec<f32>,
+    /// How much of each bin is heard: all of it, or only the soloed band's range.
+    audition_weights: Vec<f32>,
+    /// The band `audition_weights` was computed for, or -1 for none. Compared against
+    /// [`OmhemillParams::solo_band`] every cycle.
+    auditioned_band: i32,
 
     /// The envelope followers' attack coefficient for each bin. Every bin can run at its own speed
     /// because of the bands. See [`CompressorBank::update_envelope_coefficients()`].
@@ -629,6 +634,8 @@ impl CompressorBank {
             band_ranges_db: Vec::with_capacity(complex_buffer_len),
             band_down_weights: Vec::with_capacity(complex_buffer_len),
             band_up_weights: Vec::with_capacity(complex_buffer_len),
+            audition_weights: Vec::with_capacity(complex_buffer_len),
+            auditioned_band: -1,
 
             attack_old_ts: Vec::with_capacity(complex_buffer_len),
             release_old_ts: Vec::with_capacity(complex_buffer_len),
@@ -684,6 +691,7 @@ impl CompressorBank {
             &mut self.band_ranges_db,
             &mut self.band_down_weights,
             &mut self.band_up_weights,
+            &mut self.audition_weights,
             &mut self.attack_old_ts,
             &mut self.release_old_ts,
         ] {
@@ -738,6 +746,7 @@ impl CompressorBank {
         self.band_ranges_db.resize(complex_buffer_len, f32::INFINITY);
         self.band_down_weights.resize(complex_buffer_len, 1.0);
         self.band_up_weights.resize(complex_buffer_len, 0.0);
+        self.audition_weights.resize(complex_buffer_len, 1.0);
         self.attack_old_ts.resize(complex_buffer_len, 0.0);
         self.release_old_ts.resize(complex_buffer_len, 0.0);
         self.envelope_coefficients_key = None;
@@ -1064,6 +1073,8 @@ impl CompressorBank {
         assert!(self.upwards_ratios.len() == buffer.len());
         assert!(self.band_up_weights.len() == buffer.len());
         assert!(self.band_down_weights.len() == buffer.len());
+        assert!(self.audition_weights.len() == buffer.len());
+        let delta = params.global.delta.value();
         assert!(self.band_ranges_db.len() == buffer.len());
         assert!(self.upwards_knee_parabola_scale.len() == buffer.len());
         assert!(self.upwards_knee_parabola_intercept.len() == buffer.len());
@@ -1139,7 +1150,11 @@ impl CompressorBank {
                     .get_unchecked_mut(bin_idx) += gain_difference_db;
             }
 
-            *bin *= util::db_to_gain_fast(gain_difference_db);
+            // With delta, what is heard is what the brake took away (or, lifting, the negative of
+            // what it added), and a solo narrows either down to one band's range
+            let gain = util::db_to_gain_fast(gain_difference_db);
+            let gain = if delta { 1.0 - gain } else { gain };
+            *bin *= gain * unsafe { *self.audition_weights.get_unchecked(bin_idx) };
         }
     }
 
@@ -1176,6 +1191,8 @@ impl CompressorBank {
         assert!(self.upwards_ratios.len() == buffer.len());
         assert!(self.band_up_weights.len() == buffer.len());
         assert!(self.band_down_weights.len() == buffer.len());
+        assert!(self.audition_weights.len() == buffer.len());
+        let delta = params.global.delta.value();
         assert!(self.band_ranges_db.len() == buffer.len());
         for (bin_idx, (bin, envelope)) in buffer
             .iter_mut()
@@ -1270,7 +1287,11 @@ impl CompressorBank {
                     .get_unchecked_mut(bin_idx) += gain_difference_db;
             }
 
-            *bin *= util::db_to_gain_fast(gain_difference_db);
+            // With delta, what is heard is what the brake took away (or, lifting, the negative of
+            // what it added), and a solo narrows either down to one band's range
+            let gain = util::db_to_gain_fast(gain_difference_db);
+            let gain = if delta { 1.0 - gain } else { gain };
+            *bin *= gain * unsafe { *self.audition_weights.get_unchecked(bin_idx) };
         }
     }
 
@@ -1281,11 +1302,25 @@ impl CompressorBank {
         let curve = Curve::new(&curve_params);
 
         // The band shaping feeds everything below, so it goes first and drags the rest along
-        if self
+        let solo_band = params.solo_band.load(Ordering::Relaxed);
+        let bands_changed = self
             .should_update_bands
             .compare_exchange(true, false, Ordering::SeqCst, Ordering::SeqCst)
-            .is_ok()
-        {
+            .is_ok();
+        if bands_changed || solo_band != self.auditioned_band {
+            self.auditioned_band = solo_band;
+            let soloed = usize::try_from(solo_band)
+                .ok()
+                .and_then(|idx| curve_params.bands.get(idx));
+            for (ln_freq, weight) in self.ln_freqs.iter().zip(self.audition_weights.iter_mut()) {
+                *weight = match soloed {
+                    Some(band) => band.audition((ln_freq - band.ln_freq) * std::f32::consts::LOG2_E),
+                    None => 1.0,
+                };
+            }
+        }
+
+        if bands_changed {
             for (bin_idx, ln_freq) in self.ln_freqs.iter().enumerate() {
                 let shape = curve.shape_ln(*ln_freq);
                 self.band_sensitivities_db[bin_idx] = shape.sensitivity_db;

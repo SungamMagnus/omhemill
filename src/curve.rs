@@ -155,6 +155,17 @@ impl BandSettings {
         }
     }
 
+    /// How much of a frequency is heard while this band is soloed, from 0 to 1: the range a
+    /// bell or shelf covers, or the range a cut lets the brake work in.
+    #[inline]
+    pub fn audition(&self, octaves: f32) -> f32 {
+        if self.shape.is_cut() {
+            self.mask(octaves)
+        } else {
+            self.membership(octaves)
+        }
+    }
+
     /// How much of the brake a cut lets through at a frequency, from 0 to 1.
     #[inline]
     fn mask(&self, octaves: f32) -> f32 {

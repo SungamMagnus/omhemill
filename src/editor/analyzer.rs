@@ -24,7 +24,7 @@ use std::cell::Cell;
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
-use super::{BandSelection, Data};
+use super::{BandSelection, Data, SoloEvent};
 use crate::analyzer::AnalyzerData;
 use crate::curve::{BandShape, Curve, NUM_BANDS};
 use crate::OmhemillParams;
@@ -79,6 +79,8 @@ struct BandHandles {
 #[derive(Debug, Clone, Copy)]
 struct BandDrag {
     idx: usize,
+    /// Set when the drag soloed the band (alt-drag), to the solo to go back to afterwards.
+    restore_solo: Option<Option<usize>>,
     last_x: f32,
     last_y: f32,
     virtual_x: f32,
@@ -310,8 +312,18 @@ impl View for Analyzer {
                             band.enabled.end_set_parameter(cx);
                         }
 
+                        // Alt-dragging solos the band while you sweep it
+                        let restore_solo = if cx.modifiers().alt() {
+                            let previous = Data::solo_band.get(cx);
+                            cx.emit(SoloEvent::Set(Some(idx)));
+                            Some(previous)
+                        } else {
+                            None
+                        };
+
                         self.drag = Some(BandDrag {
                             idx,
+                            restore_solo,
                             last_x: mouse_x,
                             last_y: mouse_y,
                             virtual_x: mouse_x,
@@ -349,6 +361,10 @@ impl View for Analyzer {
             }
             WindowEvent::MouseUp(MouseButton::Left) => {
                 if let Some(drag) = self.drag.take() {
+                    if let Some(previous) = drag.restore_solo {
+                        cx.emit(SoloEvent::Set(previous));
+                    }
+
                     let band = &self.bands[drag.idx];
                     band.frequency.end_set_parameter(cx);
                     band.sensitivity_db.end_set_parameter(cx);

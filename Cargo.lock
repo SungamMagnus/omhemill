@@ -2599,6 +2599,7 @@ dependencies = [
  "open",
  "realfft",
  "serde",
+ "serde_json",
  "triple_buffer",
 ]
 
