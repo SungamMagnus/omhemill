@@ -354,6 +354,8 @@ impl Plugin for Omhemill {
                 presets: Vec::new(),
                 preset_index: None,
                 preset_name: self.params.preset_name.lock().unwrap().clone(),
+                saving: false,
+                save_name: String::new(),
             },
         )
     }

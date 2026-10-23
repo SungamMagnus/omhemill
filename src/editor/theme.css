@@ -189,6 +189,104 @@ textbox.preset-name {
 textbox.preset-name:focus {
   border-color: #ece8df8c;
 }
+/* The preset menu: the current name, opening a list of factory and user presets */
+dropdown.preset-menu {
+  width: 120px;
+  height: 28px;
+  left: -1px;
+}
+
+.preset-button {
+  height: 28px;
+  border-width: 1px;
+  border-color: #ece8df47;
+  background-color: #ece8df0a;
+  child-left: 10px;
+  child-right: 8px;
+  col-between: 6px;
+}
+.preset-button:hover,
+.preset-button:checked {
+  border-color: #ece8df8c;
+}
+
+.preset-current {
+  width: 1s;
+  top: 1s;
+  bottom: 1s;
+  font-size: 11;
+  color: #ece8df;
+  text-wrap: false;
+  overflow: hidden;
+}
+
+.preset-arrow {
+  width: auto;
+  top: 1s;
+  bottom: 1s;
+  font-size: 10;
+  color: #ece8df8c;
+}
+
+.preset-menu popup {
+  top: 30px;
+  left: 0px;
+  width: 240px;
+  background-color: #2e2d2b;
+  border-width: 1px;
+  border-color: #ece8df61;
+}
+
+.preset-list {
+  height: auto;
+  child-top: 6px;
+  child-bottom: 6px;
+}
+
+.preset-heading {
+  height: 22px;
+  child-left: 10px;
+  child-top: 1s;
+  child-bottom: 1s;
+  font-size: 9;
+  color: #ece8df73;
+}
+
+.preset-item {
+  height: 24px;
+  width: 1s;
+  child-left: 16px;
+  child-top: 1s;
+  child-bottom: 1s;
+  font-size: 11;
+  color: #ece8dfd9;
+}
+.preset-item:hover {
+  background-color: #ece8df14;
+}
+/* The preset that is loaded, marked in coral like the selected band */
+.preset-item.current {
+  color: #ed8159;
+  background-color: #ed81591f;
+}
+
+.preset-empty {
+  height: 24px;
+  child-left: 16px;
+  child-top: 1s;
+  child-bottom: 1s;
+  font-size: 10;
+  color: #ece8df73;
+}
+
+scrollbar {
+  width: 4px;
+  background-color: #00000000;
+}
+scrollbar .thumb {
+  background-color: #ece8df38;
+}
+
 textbox .caret {
   background-color: #ece8df;
 }
@@ -302,10 +400,6 @@ param-button.chip-dot:checked {
 /* ── band panel ────────────────────────────────────────────────────── */
 
 /* Floats over the display under the selected band, Pro-Q style */
-.panel-overlay {
-  child-space: 10px;
-}
-
 .band-panel {
   width: 440px;
   height: auto;

@@ -68,8 +68,12 @@ pub struct Data {
     pub(crate) presets: Vec<Preset>,
     /// The preset last loaded or saved, if any.
     pub(crate) preset_index: Option<usize>,
-    /// What the preset field shows, and the name a save uses.
+    /// The name of the preset last loaded or saved, shown on the preset menu.
     pub(crate) preset_name: String,
+    /// Whether the preset menu has turned into a name field for saving.
+    pub(crate) saving: bool,
+    /// What the name field holds while saving.
+    pub(crate) save_name: String,
 }
 
 /// Selecting a band opens its panel; selecting nothing closes it.
@@ -87,10 +91,13 @@ pub enum SoloEvent {
 pub enum PresetEvent {
     Previous,
     Next,
-    /// The preset field was edited.
-    Rename(String),
-    /// Save the current state as a user preset under the name in the preset field.
+    Load(usize),
+    /// Turn the preset menu into a name field or, if it already is one, save under that name.
     Save,
+    /// The name field was edited.
+    EditSaveName(String),
+    /// Leave the name field without saving.
+    CancelSave,
 }
 
 impl Data {
@@ -126,10 +133,11 @@ impl Data {
         self.set_solo(None);
     }
 
-    /// Save the current state as a user preset. A factory preset's name gets " copy" added so the
-    /// factory set stays as it ships.
+    /// Save the current state as a user preset under the name field's name. A factory preset's
+    /// name gets " copy" added so the factory set stays as it ships.
     fn save_preset(&mut self) {
-        let mut name = self.preset_name.trim().to_owned();
+        self.saving = false;
+        let mut name = self.save_name.trim().to_owned();
         if name.is_empty() {
             name = String::from("Untitled");
         }
@@ -181,8 +189,14 @@ impl Model for Data {
                 self.load_preset(cx, idx);
             }
             PresetEvent::Previous | PresetEvent::Next => (),
-            PresetEvent::Rename(name) => self.set_preset_name(name.clone()),
-            PresetEvent::Save => self.save_preset(),
+            PresetEvent::Load(idx) => self.load_preset(cx, *idx),
+            PresetEvent::Save if self.saving => self.save_preset(),
+            PresetEvent::Save => {
+                self.save_name = self.preset_name.clone();
+                self.saving = true;
+            }
+            PresetEvent::EditSaveName(name) => self.save_name = name.clone(),
+            PresetEvent::CancelSave => self.saving = false,
         });
     }
 }
@@ -260,10 +274,29 @@ fn header(cx: &mut Context) {
                 Button::new(cx, |cx| cx.emit(PresetEvent::Previous), |cx| Label::new(cx, "<"))
                     .class("header-button")
                     .class("preset-step");
-                Textbox::new(cx, Data::preset_name)
-                    .on_edit(|cx, name| cx.emit(PresetEvent::Rename(name)))
-                    .on_submit(|cx, name, _| cx.emit(PresetEvent::Rename(name)))
-                    .class("preset-name");
+
+                // The menu, or while saving, a field for the new preset's name
+                Binding::new(cx, Data::saving, |cx, saving| {
+                    if saving.get(cx) {
+                        Textbox::new(cx, Data::save_name)
+                            .on_edit(|cx, name| cx.emit(PresetEvent::EditSaveName(name)))
+                            .on_submit(|cx, name, pressed_enter| {
+                                cx.emit(PresetEvent::EditSaveName(name));
+                                if pressed_enter {
+                                    cx.emit(PresetEvent::Save);
+                                }
+                            })
+                            .on_cancel(|cx| cx.emit(PresetEvent::CancelSave))
+                            .on_build(|cx| {
+                                cx.emit(TextEvent::StartEdit);
+                                cx.emit(TextEvent::SelectAll);
+                            })
+                            .class("preset-name");
+                    } else {
+                        preset_menu(cx);
+                    }
+                });
+
                 Button::new(cx, |cx| cx.emit(PresetEvent::Next), |cx| Label::new(cx, ">"))
                     .class("header-button")
                     .class("preset-step");
@@ -314,6 +347,60 @@ fn header(cx: &mut Context) {
         });
     })
     .class("header");
+}
+
+/// The preset menu: the current preset's name, which opens a list of the factory presets and
+/// then the user's own, with the current one marked.
+fn preset_menu(cx: &mut Context) {
+    Dropdown::new(
+        cx,
+        |cx| {
+            HStack::new(cx, |cx| {
+                Label::new(cx, Data::preset_name).class("preset-current");
+                Label::new(cx, "\u{25be}").class("preset-arrow");
+            })
+            .class("preset-button")
+        },
+        |cx| {
+            let presets = Data::presets.get(cx);
+            let current = Data::preset_index.get(cx);
+            let rows = presets.len() + 3;
+
+            ScrollView::new(cx, 0.0, 0.0, false, true, move |cx| {
+                VStack::new(cx, |cx| {
+                    Label::new(cx, "FACTORY").class("preset-heading");
+                    for (idx, preset) in presets.iter().enumerate().filter(|(_, p)| p.factory) {
+                        preset_row(cx, idx, &preset.name, current == Some(idx));
+                    }
+
+                    Label::new(cx, "USER").class("preset-heading");
+                    let mut any_user = false;
+                    for (idx, preset) in presets.iter().enumerate().filter(|(_, p)| !p.factory) {
+                        preset_row(cx, idx, &preset.name, current == Some(idx));
+                        any_user = true;
+                    }
+                    if !any_user {
+                        Label::new(cx, "Nothing saved yet").class("preset-empty");
+                    }
+                })
+                .class("preset-list");
+            })
+            // Long lists scroll rather than run off the window
+            .height(Pixels((rows as f32 * 24.0 + 12.0).min(360.0)));
+        },
+    )
+    .class("preset-menu");
+}
+
+/// One preset in the menu. Choosing it loads it and closes the menu.
+fn preset_row(cx: &mut Context, idx: usize, name: &str, is_current: bool) {
+    Label::new(cx, name)
+        .class("preset-item")
+        .toggle_class("current", is_current)
+        .on_press(move |cx| {
+            cx.emit(PresetEvent::Load(idx));
+            cx.emit(PopupEvent::Close);
+        });
 }
 
 /// The spectrum display and the row of band chips under it, in one coral frame. The analyzer
@@ -399,6 +486,10 @@ fn band_chips(cx: &mut Context) {
 /// space either side of it is split in the band's position, so it stays under the band and inside
 /// the display. It sits in the lower half while the band is on or above the zero line, and in the
 /// upper half otherwise, so it never covers its own band.
+///
+/// The panel is placed directly in the display's stack rather than in a full-size row with
+/// spacers: vizia skips a non-hoverable view and everything inside it when hit testing, so such a
+/// row would either swallow the display's clicks or hide the panel's own.
 fn band_panel_overlay(cx: &mut Context) {
     Binding::new(cx, Data::selected_band, |cx, selected_band| {
         let Some(idx) = selected_band.get(cx) else {
@@ -417,21 +508,14 @@ fn band_panel_overlay(cx: &mut Context) {
                 || Curve::new(&curve_params).sensitivity_ln(band.frequency.value().ln()) <= 0.0
         });
 
-        HStack::new(cx, move |cx| {
-            Element::new(cx)
-                .width(position.map(|t| Stretch(*t)))
-                .hoverable(false);
-
-            band_panel(cx, idx)
-                .top(in_lower_half.map(|lower| if *lower { Stretch(1.0) } else { Pixels(0.0) }))
-                .bottom(in_lower_half.map(|lower| if *lower { Pixels(0.0) } else { Stretch(1.0) }));
-
-            Element::new(cx)
-                .width(position.map(|t| Stretch(1.0 - *t)))
-                .hoverable(false);
-        })
-        .class("panel-overlay")
-        .hoverable(false);
+        band_panel(cx, idx)
+            .position_type(PositionType::SelfDirected)
+            .left(position.map(|t| Stretch(*t)))
+            .right(position.map(|t| Stretch(1.0 - *t)))
+            .top(in_lower_half.map(|lower| if *lower { Stretch(1.0) } else { Pixels(10.0) }))
+            .bottom(in_lower_half.map(|lower| if *lower { Pixels(10.0) } else { Stretch(1.0) }))
+            .min_left(Pixels(10.0))
+            .min_right(Pixels(10.0));
     });
 }
 
