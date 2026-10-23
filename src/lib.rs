@@ -327,6 +327,7 @@ impl Plugin for Omhemill {
 
                 analyzer_data: self.analyzer_output_data.clone(),
                 sample_rate: self.sample_rate.clone(),
+                selected_band: None,
             },
         )
     }

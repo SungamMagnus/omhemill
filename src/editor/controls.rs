@@ -6,11 +6,14 @@
 //   and the value written at the left in that colour. Bipolar parameters fill outwards from their
 //   default instead of from the left edge.
 // - `SegmentButton` is one cell of a segmented selector for a stepped parameter.
+// - `ShapeIcon` draws a band shape, for the shape picker's segment buttons.
 //
 // The stock ParamSlider centres its value text with an inline style the stylesheet cannot
 // override, which is why the bar is its own widget.
 
 use nih_plug::prelude::Param;
+
+use crate::curve::BandShape;
 use nih_plug_vizia::vizia::prelude::*;
 use nih_plug_vizia::vizia::vg;
 use nih_plug_vizia::widgets::param_base::ParamWidgetBase;
@@ -296,6 +299,26 @@ impl SegmentButton {
         P: Param + 'static,
         FMap: Fn(&Params) -> &P + Copy + 'static,
     {
+        let label = label.to_owned();
+        Self::with_content(cx, params, params_to_param, normalized_value, move |cx| {
+            Label::new(cx, &label).class("segment-label").hoverable(false);
+        })
+    }
+
+    /// A segment showing something other than a text label, such as a [`ShapeIcon`].
+    pub fn with_content<'a, L, Params, P, FMap>(
+        cx: &'a mut Context,
+        params: L,
+        params_to_param: FMap,
+        normalized_value: f32,
+        content: impl FnOnce(&mut Context),
+    ) -> Handle<'a, Self>
+    where
+        L: Lens<Target = Params> + Clone,
+        Params: 'static,
+        P: Param + 'static,
+        FMap: Fn(&Params) -> &P + Copy + 'static,
+    {
         let is_selected = ParamWidgetBase::make_lens(params.clone(), params_to_param, move |param| {
             (param.unmodulated_normalized_value() - normalized_value).abs() < 1e-3
         });
@@ -304,9 +327,7 @@ impl SegmentButton {
             param_base: ParamWidgetBase::new(cx, params, params_to_param),
             normalized_value,
         }
-        .build(cx, |cx| {
-            Label::new(cx, label).class("segment-label").hoverable(false);
-        })
+        .build(cx, content)
         .checked(is_selected)
     }
 }
@@ -352,4 +373,86 @@ pub fn segmented<L, Params, P, FMap>(
         }
     })
     .class("segmented");
+}
+
+/// A band shape drawn as a small response curve, in the text colour so it inverts with a checked
+/// segment.
+pub struct ShapeIcon {
+    shape: BandShape,
+}
+
+impl ShapeIcon {
+    pub fn new(cx: &mut Context, shape: BandShape) -> Handle<'_, Self> {
+        Self { shape }.build(cx, |_| ()).hoverable(false)
+    }
+}
+
+impl View for ShapeIcon {
+    fn element(&self) -> Option<&'static str> {
+        Some("shape-icon")
+    }
+
+    fn draw(&self, cx: &mut DrawContext, canvas: &mut Canvas) {
+        let bounds = cx.bounds();
+        if bounds.w == 0.0 || bounds.h == 0.0 {
+            return;
+        }
+
+        // Drawn on a 24x16 grid, scaled into the bounds
+        let (sx, sy) = (bounds.w / 24.0, bounds.h / 16.0);
+        let point = |x: f32, y: f32| (bounds.x + x * sx, bounds.y + y * sy);
+        let move_to = |path: &mut vg::Path, x: f32, y: f32| {
+            let (x, y) = point(x, y);
+            path.move_to(x, y);
+        };
+        let line_to = |path: &mut vg::Path, x: f32, y: f32| {
+            let (x, y) = point(x, y);
+            path.line_to(x, y);
+        };
+        let curve_to = |path: &mut vg::Path, c: [f32; 6]| {
+            let (c1x, c1y) = point(c[0], c[1]);
+            let (c2x, c2y) = point(c[2], c[3]);
+            let (x, y) = point(c[4], c[5]);
+            path.bezier_to(c1x, c1y, c2x, c2y, x, y);
+        };
+
+        let mut path = vg::Path::new();
+        match self.shape {
+            BandShape::LowCut => {
+                move_to(&mut path, 3.0, 14.0);
+                curve_to(&mut path, [8.0, 14.0, 9.0, 3.0, 13.0, 3.0]);
+                line_to(&mut path, 22.0, 3.0);
+            }
+            BandShape::LowShelf => {
+                move_to(&mut path, 2.0, 4.0);
+                line_to(&mut path, 8.0, 4.0);
+                curve_to(&mut path, [12.0, 4.0, 12.0, 11.0, 16.0, 11.0]);
+                line_to(&mut path, 22.0, 11.0);
+            }
+            BandShape::Bell => {
+                move_to(&mut path, 2.0, 12.0);
+                line_to(&mut path, 7.0, 12.0);
+                curve_to(&mut path, [10.0, 12.0, 10.0, 3.0, 12.0, 3.0]);
+                curve_to(&mut path, [14.0, 3.0, 14.0, 12.0, 17.0, 12.0]);
+                line_to(&mut path, 22.0, 12.0);
+            }
+            BandShape::HighShelf => {
+                move_to(&mut path, 2.0, 11.0);
+                line_to(&mut path, 8.0, 11.0);
+                curve_to(&mut path, [12.0, 11.0, 12.0, 4.0, 16.0, 4.0]);
+                line_to(&mut path, 22.0, 4.0);
+            }
+            BandShape::HighCut => {
+                move_to(&mut path, 2.0, 3.0);
+                line_to(&mut path, 11.0, 3.0);
+                curve_to(&mut path, [15.0, 3.0, 16.0, 14.0, 21.0, 14.0]);
+            }
+        }
+
+        let color: vg::Color = cx.font_color().into();
+        canvas.stroke_path(
+            &path,
+            &vg::Paint::color(color).with_line_width(1.5 * cx.scale_factor()),
+        );
+    }
 }

@@ -28,9 +28,9 @@ use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
 use self::analyzer::Analyzer;
-use self::controls::{labeled_bar, segmented, BarSlider};
+use self::controls::{labeled_bar, segmented, BarSlider, SegmentButton, ShapeIcon};
 use crate::analyzer::AnalyzerData;
-use crate::curve::{BandShape, NUM_BANDS};
+use crate::curve::{BandShape, Curve, NUM_BANDS};
 use crate::OmhemillParams;
 
 mod analyzer;
@@ -58,9 +58,22 @@ pub struct Data {
     pub(crate) analyzer_data: Arc<Mutex<triple_buffer::Output<AnalyzerData>>>,
     /// Used by the analyzer to determine which FFT bins belong to which frequencies.
     pub(crate) sample_rate: Arc<AtomicF32>,
+    /// The band whose panel is open, if any. Shared by the display and the chips.
+    pub(crate) selected_band: Option<usize>,
 }
 
-impl Model for Data {}
+/// Selecting a band opens its panel; selecting nothing closes it.
+pub enum BandSelection {
+    Select(Option<usize>),
+}
+
+impl Model for Data {
+    fn event(&mut self, _cx: &mut EventContext, event: &mut Event) {
+        event.map(|selection, _| match selection {
+            BandSelection::Select(selected_band) => self.selected_band = *selected_band,
+        });
+    }
+}
 
 pub(crate) fn default_state(_editor_mode: Arc<AtomicCell<EditorMode>>) -> Arc<ViziaState> {
     ViziaState::new(move || (GUI_WIDTH, GUI_HEIGHT))
@@ -163,13 +176,20 @@ fn header(cx: &mut Context) {
 }
 
 /// The spectrum display and the row of band chips under it, in one coral frame. The analyzer
-/// draws its own grid, axis labels, spectrum, threshold curve, gain reduction and band handles.
+/// draws its own grid, axis labels, spectrum, sensitivity line and band handles; the selected
+/// band's panel floats over it.
 fn bands(cx: &mut Context) {
     VStack::new(cx, |cx| {
         frame(cx, "BANDS", "coral", |cx| {
-            Analyzer::new(cx, Data::analyzer_data, Data::sample_rate, Data::params)
-                .width(Stretch(1.0))
-                .height(Stretch(1.0));
+            ZStack::new(cx, |cx| {
+                Analyzer::new(cx, Data::analyzer_data, Data::sample_rate, Data::params)
+                    .width(Stretch(1.0))
+                    .height(Stretch(1.0));
+
+                band_panel_overlay(cx);
+            })
+            .width(Stretch(1.0))
+            .height(Stretch(1.0));
 
             band_chips(cx);
         })
@@ -221,10 +241,184 @@ fn band_chips(cx: &mut Context) {
                 .class("chip-depth");
             })
             .class("chip")
+            .toggle_class(
+                "selected",
+                Data::selected_band.map(move |selected| *selected == Some(idx)),
+            )
+            .on_press(move |cx| cx.emit(BandSelection::Select(Some(idx))))
             .width(Stretch(1.0));
         }
     })
     .class("chips");
+}
+
+/// The selected band's panel, floating over the display. It slides along with the band: the
+/// space either side of it is split in the band's position, so it stays under the band and inside
+/// the display. It sits in the lower half while the band is on or above the zero line, and in the
+/// upper half otherwise, so it never covers its own band.
+fn band_panel_overlay(cx: &mut Context) {
+    Binding::new(cx, Data::selected_band, |cx, selected_band| {
+        let Some(idx) = selected_band.get(cx) else {
+            return;
+        };
+
+        let position = Data::params.map(move |p| {
+            let band = &p.threshold.bands[idx];
+            Analyzer::freq_to_t(band.frequency.value()).clamp(0.0, 1.0)
+        });
+        let in_lower_half = Data::params.map(move |p| {
+            let band = &p.threshold.bands[idx];
+            let curve_params = p.threshold.curve_params();
+            band.shape.value().is_cut()
+                || Curve::new(&curve_params).sensitivity_ln(band.frequency.value().ln()) >= 0.0
+        });
+
+        HStack::new(cx, move |cx| {
+            Element::new(cx)
+                .width(position.map(|t| Stretch(*t)))
+                .hoverable(false);
+
+            band_panel(cx, idx)
+                .top(in_lower_half.map(|lower| if *lower { Stretch(1.0) } else { Pixels(0.0) }))
+                .bottom(in_lower_half.map(|lower| if *lower { Pixels(0.0) } else { Stretch(1.0) }));
+
+            Element::new(cx)
+                .width(position.map(|t| Stretch(1.0 - *t)))
+                .hoverable(false);
+        })
+        .class("panel-overlay")
+        .hoverable(false);
+    });
+}
+
+/// The band panel: on/off, the shape, and close in the top row; frequency, width and
+/// sensitivity; then the four brake trims in lilac. A cut has no sensitivity or trims, only a
+/// note saying what it does.
+fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, VStack> {
+    VStack::new(cx, move |cx| {
+        HStack::new(cx, move |cx| {
+            ParamButton::new(cx, Data::params, move |p| &p.threshold.bands[idx].enabled)
+                .with_label("")
+                .class("panel-on");
+            Label::new(cx, &format!("BAND {}", idx + 1)).class("panel-title");
+
+            HStack::new(cx, move |cx| {
+                let shapes = [
+                    BandShape::LowCut,
+                    BandShape::LowShelf,
+                    BandShape::Bell,
+                    BandShape::HighShelf,
+                    BandShape::HighCut,
+                ];
+                let last = (shapes.len() - 1) as f32;
+                for (shape_idx, shape) in shapes.into_iter().enumerate() {
+                    SegmentButton::with_content(
+                        cx,
+                        Data::params,
+                        move |p| &p.threshold.bands[idx].shape,
+                        shape_idx as f32 / last,
+                        move |cx| {
+                            ShapeIcon::new(cx, shape);
+                        },
+                    )
+                    .class("shape");
+                }
+            })
+            .class("segmented");
+
+            Element::new(cx).width(Stretch(1.0)).height(Pixels(0.0));
+
+            Button::new(
+                cx,
+                |cx| cx.emit(BandSelection::Select(None)),
+                |cx| Label::new(cx, "×"),
+            )
+            .class("panel-close");
+        })
+        .class("panel-row");
+
+        let is_cut = Data::params.map(move |p| p.threshold.bands[idx].shape.value().is_cut());
+        Binding::new(cx, is_cut, move |cx, is_cut| {
+            let is_cut = is_cut.get(cx);
+
+            HStack::new(cx, move |cx| {
+                labeled_bar(
+                    cx,
+                    Data::params,
+                    move |p| &p.threshold.bands[idx].frequency,
+                    "FREQUENCY",
+                    "coral",
+                );
+                labeled_bar(
+                    cx,
+                    Data::params,
+                    move |p| &p.threshold.bands[idx].width,
+                    if is_cut { "SOFTNESS" } else { "WIDTH" },
+                    "coral",
+                );
+                if !is_cut {
+                    labeled_bar(
+                        cx,
+                        Data::params,
+                        move |p| &p.threshold.bands[idx].sensitivity_db,
+                        "SENSITIVITY",
+                        "coral",
+                    );
+                }
+            })
+            .class("bars");
+
+            if is_cut {
+                Label::new(
+                    cx,
+                    "A cut has no sensitivity: it only says where the brake stops working.",
+                )
+                .class("panel-note");
+            } else {
+                VStack::new(cx, move |cx| {
+                    Element::new(cx).class("trim-rule");
+                    HStack::new(cx, move |cx| {
+                        labeled_bar(
+                            cx,
+                            Data::params,
+                            move |p| &p.threshold.bands[idx].sharp,
+                            "SHARP",
+                            "lilac",
+                        );
+                        labeled_bar(
+                            cx,
+                            Data::params,
+                            move |p| &p.threshold.bands[idx].speed,
+                            "SPEED",
+                            "lilac",
+                        );
+                        labeled_bar(
+                            cx,
+                            Data::params,
+                            move |p| &p.threshold.bands[idx].range_db,
+                            "RANGE",
+                            "lilac",
+                        );
+                        VStack::new(cx, move |cx| {
+                            Label::new(cx, "ACTION").class("bar-name");
+                            segmented(
+                                cx,
+                                Data::params,
+                                move |p| &p.threshold.bands[idx].action,
+                                &["AUTO", "SUP", "LIFT", "OFF"],
+                                "lilac",
+                            );
+                        })
+                        .class("bar-cell")
+                        .width(Auto);
+                    })
+                    .class("bars");
+                })
+                .class("trims");
+            }
+        });
+    })
+    .class("band-panel")
 }
 
 /// The global controls, one frame per signal colour.
