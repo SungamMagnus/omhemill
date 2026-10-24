@@ -126,6 +126,10 @@ pub enum BandSelection {
     Select(Option<usize>),
 }
 
+/// Put a band's shape, Q, threshold, dynamics and mode back to their defaults. It stays on, at
+/// its frequency, and its panel stays open.
+pub struct ResetBand(pub usize);
+
 /// Soloing a band plays only its range.
 pub enum SoloEvent {
     /// Solo the band, or stop soloing it if it already is.
@@ -209,6 +213,25 @@ impl Model for Data {
     fn event(&mut self, cx: &mut EventContext, event: &mut Event) {
         event.map(|selection, _| match selection {
             BandSelection::Select(selected_band) => self.selected_band = *selected_band,
+        });
+
+        event.map(|ResetBand(idx), _| {
+            let band = &self.params.threshold.bands[*idx];
+            let ptrs = [
+                band.shape.as_ptr(),
+                band.q.as_ptr(),
+                band.threshold_db.as_ptr(),
+                band.sharp.as_ptr(),
+                band.speed.as_ptr(),
+                band.range_db.as_ptr(),
+                band.action.as_ptr(),
+            ];
+            for ptr in ptrs {
+                let default = unsafe { ptr.default_normalized_value() };
+                cx.emit(RawParamEvent::BeginSetParameter(ptr));
+                cx.emit(RawParamEvent::SetParameterNormalized(ptr, default));
+                cx.emit(RawParamEvent::EndSetParameter(ptr));
+            }
         });
 
         event.map(|solo, _| match solo {
@@ -567,6 +590,14 @@ fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, HStack> {
             .with_label("")
             .class("panel-on")
             .class(&color_class);
+        Button::new(
+            cx,
+            move |cx| cx.emit(SoloEvent::Toggle(idx)),
+            |cx| Label::new(cx, "SOLO"),
+        )
+        .class("panel-solo")
+        .checked(Data::solo_band.map(move |solo_band| *solo_band == Some(idx)));
+
         Label::new(cx, &format!("BAND {}", idx + 1))
             .class("panel-title")
             .class(&color_class);
@@ -670,15 +701,7 @@ fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, HStack> {
 
         Button::new(
             cx,
-            move |cx| cx.emit(SoloEvent::Toggle(idx)),
-            |cx| Label::new(cx, "SOLO"),
-        )
-        .class("panel-solo")
-        .checked(Data::solo_band.map(move |solo_band| *solo_band == Some(idx)));
-
-        Button::new(
-            cx,
-            |cx| cx.emit(BandSelection::Select(None)),
+            move |cx| cx.emit(ResetBand(idx)),
             |cx| Label::new(cx, "×"),
         )
         .class("panel-close");

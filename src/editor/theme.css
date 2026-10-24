@@ -528,6 +528,11 @@ shape-icon {
 .band-panel .mode-cell {
   width: auto;
 }
+/* Inside the mode cell the buttons sit under their caption like the bars do */
+.band-panel .mode-cell .segmented {
+  top: 0px;
+  bottom: 0px;
+}
 
 /* Lilac: the band's dynamics, subordinate to the main controls they scale */
 .dynamics-rule {

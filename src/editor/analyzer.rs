@@ -20,13 +20,14 @@ use nih_plug_vizia::vizia::prelude::*;
 use nih_plug_vizia::vizia::vg;
 use nih_plug_vizia::widgets::param_base::ParamWidgetBase;
 use nih_plug_vizia::widgets::util::ModifiersExt;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use super::{BandSelection, Data, SoloEvent, BAND_COLORS};
 use crate::analyzer::AnalyzerData;
-use crate::curve::{octaves_from_q, BandShape, Curve, NUM_BANDS};
+use crate::curve::{octaves_from_q, BandShape, Curve, NUM_BANDS, RANGE_UNLIMITED_DB};
 use crate::OmhemillParams;
 
 /// The threshold line is the thing you are actually shaping, so it is drawn in full ink.
@@ -49,6 +50,19 @@ const NODE_RADIUS: f32 = 10.0;
 const REDUCTION_COLOR: vg::Color = vg::Color::rgbaf(0.851, 0.639, 0.161, 0.75);
 /// ...and, a shade lighter, what it is lifting.
 const LIFT_COLOR: vg::Color = vg::Color::rgbaf(0.941, 0.812, 0.478, 0.55);
+
+/// How fast the peak-hold line falls, in decibels per second.
+const PEAK_FALL_DB_PER_SECOND: f32 = 12.0;
+/// The gain change trace hangs from the top edge: this much gain change reaches
+/// [`GAIN_TRACE_HEIGHT`] of the display's height.
+const GAIN_TRACE_RANGE_DB: f32 = 24.0;
+const GAIN_TRACE_HEIGHT: f32 = 0.16;
+/// Below this a bin counts as silent.
+const FLOOR_DB: f32 = -100.0;
+
+/// How many pixels a decibel of gain change takes on a band's meter, and the meter's longest bar.
+const METER_PX_PER_DB: f32 = 4.0;
+const METER_MAX_PX: f32 = 80.0;
 
 /// Shift-dragging a band moves it this much slower than the pointer.
 const GRANULAR_DRAG_MULTIPLIER: f32 = 0.1;
@@ -103,6 +117,10 @@ pub struct Analyzer {
     scrolled_lines: f32,
     /// Lazily registered with the canvas the first time we draw text on it.
     font: Cell<Option<vg::FontId>>,
+    /// The peak-hold line, in decibels, one value per column of the display.
+    peaks_db: RefCell<Vec<f32>>,
+    /// When the peak-hold line was last updated, so it falls at the same rate at any frame rate.
+    last_peak_update: Cell<Option<Instant>>,
 }
 
 impl Analyzer {
@@ -147,6 +165,8 @@ impl Analyzer {
             hover: None,
             scrolled_lines: 0.0,
             font: Cell::new(None),
+            peaks_db: RefCell::new(Vec::new()),
+            last_peak_update: Cell::new(None),
         }
         .build(
             cx,
@@ -454,7 +474,7 @@ impl View for Analyzer {
             if let Some(idx) = selected {
                 self.draw_band_region(cx, canvas, idx);
             }
-            draw_spectrum(cx, canvas, analyzer_data, nyquist);
+            self.draw_spectrum(cx, canvas, analyzer_data, nyquist);
             self.draw_threshold_line(cx, canvas);
             self.draw_bands(cx, canvas, selected, analyzer_data, nyquist);
             self.draw_legend(cx, canvas);
@@ -566,6 +586,28 @@ impl Analyzer {
         let grid_paint = vg::Paint::color(vg::Color::rgbaf(ink.r, ink.g, ink.b, 0.07))
             .with_line_width(scale);
         let label_color = vg::Color::rgbaf(ink.r, ink.g, ink.b, 0.45);
+
+        // A fainter grid between the labelled lines: every step of each decade, and every 6 dB
+        let mut minor = vg::Path::new();
+        for decade in [10.0f32, 100.0, 1_000.0, 10_000.0] {
+            for step in 2..10 {
+                let t = Self::freq_to_t(decade * step as f32);
+                if (0.0..=1.0).contains(&t) {
+                    let x = (bounds.x + bounds.w * t).round() + 0.5;
+                    minor.move_to(x, bounds.y);
+                    minor.line_to(x, bounds.y + bounds.h);
+                }
+            }
+        }
+        for db in [-6.0f32, -18.0, -30.0, -42.0, -54.0, -66.0, -78.0] {
+            let y = (bounds.y + bounds.h * (1.0 - db_to_unclamped_t(db))).round() + 0.5;
+            minor.move_to(bounds.x, y);
+            minor.line_to(bounds.x + bounds.w, y);
+        }
+        canvas.stroke_path(
+            &minor,
+            &vg::Paint::color(vg::Color::rgbaf(ink.r, ink.g, ink.b, 0.035)).with_line_width(scale),
+        );
 
         for (freq, label) in [
             (30.0f32, "30"),
@@ -783,16 +825,32 @@ impl Analyzer {
 
             if enabled {
                 if let Some((low_hz, high_hz)) = self.band_range_hz(idx) {
+                    let meter_top = y + radius + 3.0 * scale;
                     let braking_db = peak_gain_change_db(analyzer_data, nyquist_hz, low_hz, high_hz);
                     if braking_db >= 0.2 {
                         let mut meter = vg::Path::new();
                         meter.rect(
                             x - 2.0 * scale,
-                            y + radius + 3.0 * scale,
+                            meter_top,
                             4.0 * scale,
-                            (braking_db * 4.0).min(80.0) * scale,
+                            (braking_db * METER_PX_PER_DB).min(METER_MAX_PX) * scale,
                         );
                         canvas.fill_path(&meter, &vg::Paint::color(REDUCTION_COLOR));
+                    }
+
+                    // The band's range as a tick on the same scale, so you can see the meter stop
+                    // at it
+                    let range_db = self.params.threshold.bands[idx].range_db.value();
+                    let range_px = range_db * METER_PX_PER_DB;
+                    if range_db < RANGE_UNLIMITED_DB && range_px <= METER_MAX_PX {
+                        let mut tick = vg::Path::new();
+                        tick.rect(
+                            x - 6.0 * scale,
+                            meter_top + range_px * scale,
+                            12.0 * scale,
+                            1.5 * scale,
+                        );
+                        canvas.fill_path(&tick, &vg::Paint::color(color));
                     }
                 }
             }
@@ -929,76 +987,286 @@ fn peak_gain_change_db(
         .fold(0.0f32, |peak, gain_change_db| peak.max(gain_change_db.abs()))
 }
 
-/// The spectrum, with the brake's work in the gap between the input and the output: amber where
-/// the output is quieter than the input, a lighter amber where the brake lifted it. The rest of
-/// the spectrum, the part both share, is drawn in the display's own spectrum colour on top.
-fn draw_spectrum(
-    cx: &mut DrawContext,
-    canvas: &mut Canvas,
-    analyzer_data: &AnalyzerData,
-    nyquist_hz: f32,
-) {
-    let bounds = cx.bounds();
-    if analyzer_data.num_bins < 2 || nyquist_hz <= 0.0 {
-        return;
+/// One column of the display: the input level, the gain change, and so the output level, in
+/// decibels.
+#[derive(Debug, Clone, Copy)]
+struct Column {
+    input_db: f32,
+    gain_change_db: f32,
+}
+
+impl Column {
+    fn output_db(&self) -> f32 {
+        self.input_db + self.gain_change_db
     }
+}
 
-    let spectrum_color: vg::Color = cx.font_color().into();
-    let height_of = |db: f32| db_to_unclamped_t(db).clamp(0.0, 1.0);
-
-    // One point per bin while the bins are spread out, then one per pixel column once they bunch
-    // up, keeping the loudest bin in each column
-    let mut points: Vec<(f32, f32, f32)> = Vec::with_capacity(bounds.w.ceil() as usize + 64);
-    for bin_idx in 1..analyzer_data.num_bins {
-        let freq = (bin_idx as f32 / analyzer_data.num_bins as f32) * nyquist_hz;
-        let t = (freq.ln() - LN_FREQ_RANGE_START_HZ) / LN_FREQ_RANGE;
-        if t <= 0.0 {
-            continue;
-        }
-        if t >= 1.0 {
-            break;
-        }
-
-        let input_db = nih_plug::util::gain_to_db(analyzer_data.envelope_followers[bin_idx]);
-        let output_db = input_db + analyzer_data.gain_difference_db[bin_idx];
-        let x = bounds.x + bounds.w * t;
-        let (input_t, output_t) = (height_of(input_db), height_of(output_db));
-
-        match points.last_mut() {
-            Some(last) if x - last.0 < 1.0 => {
-                last.1 = last.1.max(input_t);
-                last.2 = last.2.max(output_t);
-            }
-            _ => points.push((x, input_t, output_t)),
-        }
-    }
-    if points.is_empty() {
-        return;
-    }
-
-    let mesh = |height: &dyn Fn(&(f32, f32, f32)) -> f32| {
-        let bottom = bounds.y + bounds.h;
-        let mut path = vg::Path::new();
-        path.move_to(points[0].0, bottom);
-        for point in &points {
-            path.line_to(point.0, bounds.y + bounds.h * (1.0 - height(point)));
-        }
-        path.line_to(points[points.len() - 1].0, bottom);
-        path.close();
-        path
+/// Samples the spectrum once per column. Where a column is narrower than a bin (the low end, on a
+/// log scale) the neighbouring bins are interpolated so the curve stays smooth; where a column
+/// holds several bins the loudest is kept, and the gain change with the largest magnitude.
+fn sample_columns(analyzer_data: &AnalyzerData, nyquist_hz: f32, num_columns: usize) -> Vec<Column> {
+    let num_bins = analyzer_data.num_bins;
+    let bin_at = |t: f32| Analyzer::t_to_freq(t) / nyquist_hz * num_bins as f32;
+    let input_db_at = |bin_idx: usize| {
+        nih_plug::util::gain_to_db(analyzer_data.envelope_followers[bin_idx]).max(FLOOR_DB)
     };
 
-    // Anti aliasing only causes seams between the three layers
-    canvas.fill_path(
-        &mesh(&|point| point.1),
-        &vg::Paint::color(REDUCTION_COLOR).with_anti_alias(false),
-    );
-    canvas.fill_path(
-        &mesh(&|point| point.2),
-        &vg::Paint::color(LIFT_COLOR).with_anti_alias(false),
-    );
-    canvas.fill_path(
-        &mesh(&|point| point.1.min(point.2)),
-        &vg::Paint::color(spectrum_color).with_anti_alias(false),
-    );
+    (0..num_columns)
+        .map(|column_idx| {
+            let first_bin = bin_at(column_idx as f32 / num_columns as f32);
+            let last_bin = bin_at((column_idx + 1) as f32 / num_columns as f32);
+
+            if last_bin - first_bin < 1.0 {
+                let bin = bin_at((column_idx as f32 + 0.5) / num_columns as f32);
+                let low = (bin.floor() as usize).clamp(1, num_bins - 2);
+                let frac = (bin - low as f32).clamp(0.0, 1.0);
+                let lerp = |a: f32, b: f32| a + (b - a) * frac;
+
+                Column {
+                    input_db: lerp(input_db_at(low), input_db_at(low + 1)),
+                    gain_change_db: lerp(
+                        analyzer_data.gain_difference_db[low],
+                        analyzer_data.gain_difference_db[low + 1],
+                    ),
+                }
+            } else {
+                let first = (first_bin.ceil() as usize).clamp(1, num_bins - 1);
+                let last = (last_bin.floor() as usize).clamp(first, num_bins - 1);
+                let mut column = Column {
+                    input_db: FLOOR_DB,
+                    gain_change_db: 0.0,
+                };
+                for bin_idx in first..=last {
+                    column.input_db = column.input_db.max(input_db_at(bin_idx));
+                    let gain_change_db = analyzer_data.gain_difference_db[bin_idx];
+                    if gain_change_db.abs() > column.gain_change_db.abs() {
+                        column.gain_change_db = gain_change_db;
+                    }
+                }
+                column
+            }
+        })
+        .collect()
+}
+
+/// A closed shape from the bottom of `bounds` up to a height per column and back down.
+fn column_mesh(bounds: BoundingBox, heights: impl Iterator<Item = f32>, num_columns: usize) -> vg::Path {
+    let column_w = bounds.w / num_columns as f32;
+    let bottom = bounds.y + bounds.h;
+    let mut path = vg::Path::new();
+    path.move_to(bounds.x, bottom);
+    for (column_idx, height) in heights.enumerate() {
+        let x = bounds.x + (column_idx as f32 + 0.5) * column_w;
+        path.line_to(x, bounds.y + bounds.h * (1.0 - height));
+    }
+    path.line_to(bounds.x + bounds.w, bottom);
+    path.close();
+    path
+}
+
+/// An open line through a height per column.
+fn column_line(bounds: BoundingBox, heights: impl Iterator<Item = f32>, num_columns: usize) -> vg::Path {
+    let column_w = bounds.w / num_columns as f32;
+    let mut path = vg::Path::new();
+    for (column_idx, height) in heights.enumerate() {
+        let x = bounds.x + (column_idx as f32 + 0.5) * column_w;
+        let y = bounds.y + bounds.h * (1.0 - height);
+        if column_idx == 0 {
+            path.move_to(x, y);
+        } else {
+            path.line_to(x, y);
+        }
+    }
+    path
+}
+
+impl Analyzer {
+    /// The spectrum, with the compression's work in the gap between the input and the output:
+    /// amber where the output is quieter than the input, a lighter amber where it was lifted.
+    /// The part both share is shaded in the display's spectrum colour, with the output drawn as a
+    /// crisp line, the input as a faint one, and a slowly falling peak-hold line above. Along the
+    /// top edge hangs the gain change at every frequency, so the compression reads even where the
+    /// signal is quiet.
+    fn draw_spectrum(
+        &self,
+        cx: &mut DrawContext,
+        canvas: &mut Canvas,
+        analyzer_data: &AnalyzerData,
+        nyquist_hz: f32,
+    ) {
+        let bounds = cx.bounds();
+        if analyzer_data.num_bins < 3 || nyquist_hz <= 0.0 || bounds.w < 2.0 {
+            return;
+        }
+
+        let scale = cx.scale_factor();
+        let num_columns = (bounds.w / scale).ceil() as usize;
+        let columns = sample_columns(analyzer_data, nyquist_hz, num_columns);
+        let height_of = |db: f32| db_to_unclamped_t(db).clamp(0.0, 1.0);
+
+        // The peak-hold line falls at a fixed rate whatever the frame rate
+        let now = Instant::now();
+        let elapsed = self
+            .last_peak_update
+            .replace(Some(now))
+            .map(|last| now.duration_since(last).as_secs_f32().min(0.25))
+            .unwrap_or(0.0);
+        let mut peaks_db = self.peaks_db.borrow_mut();
+        if peaks_db.len() != num_columns {
+            *peaks_db = vec![FLOOR_DB; num_columns];
+        }
+        for (peak_db, column) in peaks_db.iter_mut().zip(&columns) {
+            *peak_db = (*peak_db - PEAK_FALL_DB_PER_SECOND * elapsed).max(column.input_db);
+        }
+
+        let spectrum: vg::Color = cx.font_color().into();
+        let ink: vg::Color = cx.border_color().into();
+        let ink = |alpha: f32| vg::Color::rgbaf(ink.r, ink.g, ink.b, alpha);
+
+        // Anti aliasing only causes seams between the stacked layers
+        let reduction = vg::Paint::linear_gradient(
+            bounds.x,
+            bounds.y,
+            bounds.x,
+            bounds.y + bounds.h,
+            vg::Color::rgbaf(REDUCTION_COLOR.r, REDUCTION_COLOR.g, REDUCTION_COLOR.b, 0.95),
+            vg::Color::rgbaf(REDUCTION_COLOR.r, REDUCTION_COLOR.g, REDUCTION_COLOR.b, 0.55),
+        )
+        .with_anti_alias(false);
+        canvas.fill_path(
+            &column_mesh(bounds, columns.iter().map(|c| height_of(c.input_db)), num_columns),
+            &reduction,
+        );
+        canvas.fill_path(
+            &column_mesh(bounds, columns.iter().map(|c| height_of(c.output_db())), num_columns),
+            &vg::Paint::color(LIFT_COLOR).with_anti_alias(false),
+        );
+
+        // The shared part, lighter towards the top so loud regions stand out. Both stops are
+        // opaque so the amber only shows in the gap.
+        let lighter = vg::Color::rgbf(
+            (spectrum.r * 1.35).min(1.0),
+            (spectrum.g * 1.35).min(1.0),
+            (spectrum.b * 1.35).min(1.0),
+        );
+        let darker = vg::Color::rgbf(
+            (spectrum.r + STAGE_COLOR.r) / 2.0,
+            (spectrum.g + STAGE_COLOR.g) / 2.0,
+            (spectrum.b + STAGE_COLOR.b) / 2.0,
+        );
+        canvas.fill_path(
+            &column_mesh(
+                bounds,
+                columns
+                    .iter()
+                    .map(|c| height_of(c.input_db.min(c.output_db()))),
+                num_columns,
+            ),
+            &vg::Paint::linear_gradient(
+                bounds.x,
+                bounds.y + bounds.h * 0.2,
+                bounds.x,
+                bounds.y + bounds.h,
+                lighter,
+                darker,
+            )
+            .with_anti_alias(false),
+        );
+
+        canvas.scissor(bounds.x, bounds.y, bounds.w, bounds.h);
+        canvas.stroke_path(
+            &column_line(bounds, peaks_db.iter().map(|db| height_of(*db)), num_columns),
+            &vg::Paint::color(ink(0.22)).with_line_width(scale),
+        );
+        canvas.stroke_path(
+            &column_line(bounds, columns.iter().map(|c| height_of(c.input_db)), num_columns),
+            &vg::Paint::color(ink(0.30)).with_line_width(scale),
+        );
+        canvas.stroke_path(
+            &column_line(bounds, columns.iter().map(|c| height_of(c.output_db())), num_columns),
+            &vg::Paint::color(ink(0.62)).with_line_width(1.2 * scale),
+        );
+
+        // The gain change trace, hanging from the top edge
+        let trace_y = |column: &Column| {
+            let t = (column.gain_change_db.abs() / GAIN_TRACE_RANGE_DB).min(1.0);
+            bounds.y + bounds.h * GAIN_TRACE_HEIGHT * t
+        };
+        let column_w = bounds.w / num_columns as f32;
+        let mut trace_fill = vg::Path::new();
+        let mut trace_line = vg::Path::new();
+        trace_fill.move_to(bounds.x, bounds.y);
+        for (column_idx, column) in columns.iter().enumerate() {
+            let x = bounds.x + (column_idx as f32 + 0.5) * column_w;
+            let y = trace_y(column);
+            trace_fill.line_to(x, y);
+            if column_idx == 0 {
+                trace_line.move_to(x, y);
+            } else {
+                trace_line.line_to(x, y);
+            }
+        }
+        trace_fill.line_to(bounds.x + bounds.w, bounds.y);
+        trace_fill.close();
+        canvas.fill_path(
+            &trace_fill,
+            &vg::Paint::color(vg::Color::rgbaf(
+                REDUCTION_COLOR.r,
+                REDUCTION_COLOR.g,
+                REDUCTION_COLOR.b,
+                0.16,
+            )),
+        );
+        canvas.stroke_path(
+            &trace_line,
+            &vg::Paint::color(vg::Color::rgbaf(
+                REDUCTION_COLOR.r,
+                REDUCTION_COLOR.g,
+                REDUCTION_COLOR.b,
+                0.9,
+            ))
+            .with_line_width(1.2 * scale),
+        );
+        canvas.reset_scissor();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A 2048-point spectrum at 48 kHz, -40 dB everywhere, with -6 dB of gain change in the bins
+    /// given.
+    fn analyzer_data(loud_bin: usize, compressed_bins: std::ops::Range<usize>) -> AnalyzerData {
+        let mut data = AnalyzerData::default();
+        data.num_bins = 1025;
+        data.envelope_followers[..1025].fill(nih_plug::util::db_to_gain(-40.0));
+        data.envelope_followers[loud_bin] = nih_plug::util::db_to_gain(-10.0);
+        data.gain_difference_db[compressed_bins].fill(-6.0);
+        data
+    }
+
+    #[test]
+    fn treble_columns_keep_the_loudest_bin_and_largest_gain_change() {
+        // Bin 900 is about 21 kHz, where every column holds several bins
+        let data = analyzer_data(900, 895..905);
+        let columns = sample_columns(&data, 24_000.0, 800);
+
+        let loudest = columns.iter().map(|c| c.input_db).fold(f32::MIN, f32::max);
+        assert!((loudest - -10.0).abs() < 0.01);
+        assert!(columns.iter().any(|c| (c.gain_change_db - -6.0).abs() < 1e-4));
+    }
+
+    #[test]
+    fn bass_columns_interpolate_between_bins() {
+        // Around 30-100 Hz a 2048-point bin spans many columns, so the curve is interpolated
+        // rather than drawn in steps
+        let data = analyzer_data(3, 0..0);
+        let columns = sample_columns(&data, 24_000.0, 800);
+
+        let low_end: Vec<f32> = columns[..120].iter().map(|c| c.input_db).collect();
+        let distinct = low_end.windows(2).filter(|pair| (pair[0] - pair[1]).abs() > 1e-3).count();
+        assert!(distinct > 20, "the low end should change smoothly, not in a few steps");
+        assert!(low_end.iter().all(|db| (-40.01..=-9.99).contains(db)));
+    }
 }
