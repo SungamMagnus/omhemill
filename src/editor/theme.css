@@ -1,230 +1,658 @@
-/* Ómhemill — the Sungam plugin palette: cream paper, ink rules, one accent per bank. */
+/* Ómhemill — the Sungam design system, graphite edition: the same tokens as Beygla
+   (SungamKit.swift) and Samplebrain (Sungam.h), so the plugin sits beside them.
+
+   Colour is signal and never decoration. Backgrounds are flat paper, type is one monospace face,
+   corners are square, and borders are hairlines at partial ink opacity.
+
+     paper  #2e2d2b   panels                ink    #ece8df   text and rules
+     stage  #201f1e   behind the spectrum
+
+   Ómhemill's signal assignment:
+
+     coral  #ed8159   detection and the bands — what gets braked, and how hard
+     teal   #52b0a4   time
+     steel  #6695c2   output
+     amber  #d9a329   live state only: braking right now
+     violet #8c7de0   the sidechain, a signal moving the thresholds
+     lilac  #d3a7dc   trims subordinate to another control (reserved for the band trims) */
 
 :root {
-  background-color: #f2f1ec;
-  color: #191c1b;
-  font-size: 13;
-  font-weight: light;
+  background-color: #2e2d2b;
+  color: #ece8df;
+  font-family: "Menlo", "DejaVu Sans Mono", "Consolas";
+  font-size: 12;
 }
 
-.frame {
-  child-space: 16px;
-  row-between: 12px;
-  background-color: #f2f1ec;
-}
-
-/* ── header ────────────────────────────────────────────────────────── */
-
-.header {
-  child-bottom: 6px;
-  col-between: 12px;
+.frame-root {
+  background-color: #2e2d2b;
 }
 
 /* vizia has no per-side border properties, so rules are their own elements */
 .divider {
   height: 1px;
   width: 1s;
-  background-color: #dcdbd4;
+  background-color: #ece8df21;
 }
 
+/* ── header ────────────────────────────────────────────────────────── */
+
+.header {
+  height: 64px;
+  child-left: 32px;
+  child-right: 32px;
+  col-between: 16px;
+}
+
+/* Letter-spacing is not available, so the wordmark's tracking is one label per letter */
 .wordmark {
-  font-size: 26;
-  color: #191c1b;
+  width: auto;
+  height: auto;
   top: 1s;
   bottom: 1s;
+  col-between: 5px;
+}
+.wordmark label {
+  font-size: 20;
+  font-weight: bold;
+  color: #ece8df8c;
+  width: auto;
 }
 
-.tagline {
-  font-size: 12;
-  color: #8d8f8b;
+.field {
+  width: auto;
+  height: auto;
   top: 1s;
-  bottom: 4px;
+  bottom: 1s;
+  row-between: 4px;
 }
 
-.strip-label {
+/* Small caps captions over every control: upper case, there being no letter-spacing */
+.cap,
+.bar-name {
   font-size: 10;
-  color: #8d8f8b;
-  top: 1s;
-  bottom: 1s;
+  color: #ece8df9e;
+  height: 13px;
 }
 
-.mode-slider {
-  width: 330px;
-  height: 26px;
+/* ── segmented selectors ───────────────────────────────────────────── */
+
+.segmented {
+  height: 28px;
+  width: auto;
+}
+
+segment-button {
+  height: 28px;
+  width: auto;
+  child-left: 12px;
+  child-right: 12px;
+  child-top: 1s;
+  child-bottom: 1s;
+  border-width: 1px;
+  border-color: #ece8df47;
+  background-color: #00000000;
+  color: #ece8dfd9;
   font-size: 11;
-  top: 1s;
-  bottom: 1s;
+  left: -1px;
+}
+segment-button:hover {
+  border-color: #ece8df8c;
+}
+segment-button:checked {
+  background-color: #ece8df;
+  border-color: #ece8df;
+  color: #201f1e;
+}
+segment-button.violet:checked {
+  background-color: #8c7de0;
+  border-color: #8c7de0;
+}
+segment-button.coral:checked {
+  background-color: #ed8159;
+  border-color: #ed8159;
 }
 
-/* The resize handle lives in the bottom right corner. Give it a bit more presence and a
-   larger grab area than the stock 20x20 so it is actually findable. */
-resize-handle {
-  color: #191c1b;
-  width: 26px;
-  height: 26px;
-  opacity: 0.35;
+/* Header buttons, toggles and the resolution stepper all share the segment's size, so the header
+   reads as one row of equal controls */
+button.header-button,
+resolution-button,
+param-button.header-toggle {
+  height: 28px;
+  width: auto;
+  child-left: 12px;
+  child-right: 12px;
+  child-top: 1s;
+  child-bottom: 1s;
+  border-width: 1px;
+  border-color: #ece8df47;
+  background-color: #00000000;
+  color: #ece8dfd9;
+  font-size: 11;
+  left: -1px;
 }
-resize-handle:hover,
-resize-handle:active {
-  opacity: 0.8;
+button.header-button:hover,
+resolution-button:hover,
+param-button.header-toggle:hover {
+  border-color: #ece8df8c;
+  background-color: #00000000;
 }
+button.header-button:active {
+  background-color: #ece8df1a;
+}
+button.preset-step {
+  child-left: 9px;
+  child-right: 9px;
+}
+resolution-button {
+  left: 0px;
+  width: 96px;
+}
+
+.toggles {
+  height: 28px;
+  width: auto;
+  col-between: 8px;
+}
+param-button.header-toggle {
+  left: 0px;
+}
+param-button.header-toggle:checked {
+  background-color: #ece8df;
+  border-color: #ece8df;
+  color: #201f1e;
+}
+/* Amber is live state: Delta changes what you hear */
+param-button.header-toggle.amber {
+  border-color: #d9a329;
+  color: #d9a329;
+}
+param-button.header-toggle.amber:checked {
+  background-color: #d9a329;
+  color: #201f1e;
+}
+
+/* The preset name, editable in place */
+textbox.preset-name {
+  width: 120px;
+  height: 28px;
+  left: -1px;
+  child-left: 10px;
+  child-right: 10px;
+  child-top: 1s;
+  child-bottom: 1s;
+  border-width: 1px;
+  border-color: #ece8df47;
+  background-color: #ece8df0a;
+  color: #ece8df;
+  font-size: 11;
+}
+textbox.preset-name:focus {
+  border-color: #ece8df8c;
+}
+/* The preset menu: the current name, opening a list of factory and user presets */
+dropdown.preset-menu {
+  width: 120px;
+  height: 28px;
+  left: -1px;
+}
+
+.preset-button {
+  height: 28px;
+  border-width: 1px;
+  border-color: #ece8df47;
+  background-color: #ece8df0a;
+  child-left: 10px;
+  child-right: 8px;
+  col-between: 6px;
+}
+.preset-button:hover,
+.preset-button:checked {
+  border-color: #ece8df8c;
+}
+
+.preset-current {
+  width: 1s;
+  top: 1s;
+  bottom: 1s;
+  font-size: 11;
+  color: #ece8df;
+  text-wrap: false;
+  overflow: hidden;
+}
+
+.preset-arrow {
+  width: auto;
+  top: 1s;
+  bottom: 1s;
+  font-size: 10;
+  color: #ece8df8c;
+}
+
+.preset-menu popup {
+  top: 30px;
+  left: 0px;
+  width: 240px;
+  background-color: #2e2d2b;
+  border-width: 1px;
+  border-color: #ece8df61;
+}
+
+.preset-list {
+  height: auto;
+  child-left: 0px;
+  child-right: 0px;
+  child-top: 6px;
+  child-bottom: 6px;
+}
+
+.preset-heading {
+  height: 22px;
+  child-left: 10px;
+  child-top: 1s;
+  child-bottom: 1s;
+  font-size: 9;
+  color: #ece8df73;
+}
+
+.preset-item {
+  height: 24px;
+  width: 1s;
+  child-left: 16px;
+  child-top: 1s;
+  child-bottom: 1s;
+  font-size: 11;
+  color: #ece8dfd9;
+}
+.preset-item:hover {
+  background-color: #ece8df14;
+}
+/* The preset that is loaded, in full ink: the band colours stay with the bands */
+.preset-item.current {
+  color: #ece8df;
+  background-color: #ece8df1f;
+}
+
+.preset-empty {
+  height: 24px;
+  child-left: 16px;
+  child-top: 1s;
+  child-bottom: 1s;
+  font-size: 10;
+  color: #ece8df73;
+}
+
+scrollview > scroll_content {
+  child-right: 0px;
+}
+
+scrollbar {
+  width: 4px;
+  background-color: #00000000;
+}
+scrollbar .thumb {
+  background-color: #ece8df38;
+}
+
+textbox .caret {
+  background-color: #ece8df;
+}
+textbox .selection {
+  background-color: #ece8df40;
+}
+
+/* ── frames ────────────────────────────────────────────────────────── */
+
+/* A section drawn as the box its controls sit inside: a hairline in the section colour, with the
+   title inset into the rule. */
+.frame {
+  border-width: 1px;
+  child-left: 16px;
+  child-right: 16px;
+  child-top: 18px;
+  child-bottom: 14px;
+}
+
+.frame-title {
+  position-type: self-directed;
+  top: -8px;
+  left: 14px;
+  height: 15px;
+  width: auto;
+  child-left: 6px;
+  child-right: 6px;
+  font-size: 11;
+  background-color: #2e2d2b;
+}
+
+.frame.coral { border-color: #ed8159; }
+.frame.teal { border-color: #52b0a4; }
+.frame.steel { border-color: #6695c2; }
+.frame-title.coral { color: #ed8159; }
+.frame-title.teal { color: #52b0a4; }
+.frame-title.steel { color: #6695c2; }
 
 /* ── display ───────────────────────────────────────────────────────── */
 
-.display,
+/* The analyzer reads its colours from here: ink from `border-color` (grid and labels are drawn
+   at their own partial opacities), and the spectrum from `color`. */
 analyzer {
-  background-color: #f7f6f3;
-  border-color: #191c1b;
+  background-color: #201f1e;
+  border-color: #ece8df21;
   border-width: 1px;
-  color: #8d8f8b;
+  color: #4a4845;
 }
 
-/* ── node strip ────────────────────────────────────────────────────── */
+/* ── band chips ────────────────────────────────────────────────────── */
 
-.strip {
-  child-bottom: 4px;
+.chips {
+  height: 30px;
+  top: 12px;
+  col-between: 6px;
 }
 
-.node-cell {
-  child-left: 10px;
+.chip {
+  height: 30px;
+  border-width: 1px;
+  border-color: #ed815959;
+  child-left: 6px;
+  child-right: 6px;
+  col-between: 6px;
 }
 
-.node-freq {
-  font-size: 12;
-  color: #191c1b;
+.chip {
+  overflow: hidden;
+}
+
+.chip-freq,
+.chip-depth {
+  font-size: 10;
+  color: #ece8df8c;
+  width: auto;
   top: 1s;
   bottom: 1s;
 }
-
-.node-depth {
-  font-size: 10;
-  color: #8d8f8b;
+.chip-freq {
+  color: #ece8dfcc;
 }
 
-param-button.node-dot {
-  width: 19px;
-  height: 19px;
+param-button.chip-dot {
+  width: 18px;
+  height: 18px;
+  top: 1s;
+  bottom: 1s;
   child-space: 1s;
-  font-size: 9;
-  border-width: 1px;
-  border-color: #8d8f8b;
-  color: #8d8f8b;
-  background-color: #00000000;
-}
-param-button.node-dot:hover {
-  background-color: #c2521a20;
-}
-param-button.node-dot:checked {
-  background-color: #c2521a;
-  border-color: #c2521a;
-  color: #f2f1ec;
-}
-
-/* ── banks ─────────────────────────────────────────────────────────── */
-
-.bank-rule {
-  height: 2px;
-  width: 1s;
-  background-color: #191c1b;
-}
-
-.bank-title {
-  font-size: 11;
-  color: #191c1b;
-}
-
-.bank-sub {
-  font-size: 9;
-  color: #b0b1ac;
-  top: 1s;
-  bottom: 1s;
-}
-
-.rule-detect { background-color: #c2521a; color: #c2521a; }
-.rule-shape { background-color: #2e4b8f; color: #2e4b8f; }
-.rule-time { background-color: #0f7a72; color: #0f7a72; }
-.rule-spectrum { background-color: #a8285a; color: #a8285a; }
-.rule-output { background-color: #191c1b; color: #191c1b; }
-
-/* Labels pick up `color` from the rule classes above, but must not paint a background */
-label.bank-title {
-  background-color: #00000000;
-}
-
-/* ── knobs ─────────────────────────────────────────────────────────── */
-
-knob-dial {
-  background-color: #f7f6f3;
-  border-color: #191c1b;
-}
-
-.knob-cell {
-  child-space: 1px;
-}
-
-.knob-value {
-  font-size: 11;
-  color: #191c1b;
-  top: 3px;
-}
-
-.knob-name {
-  font-size: 9;
-  color: #8d8f8b;
-}
-
-/* ── footer ────────────────────────────────────────────────────────── */
-
-.footer {
-  child-top: 2px;
-  col-between: 8px;
-}
-
-.footer-label {
-  font-size: 9;
-  color: #b0b1ac;
-  top: 1s;
-  bottom: 1s;
-}
-
-.footer-value {
   font-size: 10;
-  color: #191c1b;
+  font-weight: bold;
+  border-width: 1px;
+  border-color: #ece8df61;
+  color: #ece8df8c;
+  background-color: #00000000;
+}
+param-button.chip-dot:hover {
+  border-color: #ed8159;
+  background-color: #ed815924;
+}
+param-button.chip-dot:checked {
+  background-color: #ed8159;
+  border-color: #ed8159;
+  color: #201f1e;
+}
+
+.chip.selected {
+  border-color: #ed8159;
+  background-color: #ed815924;
+}
+
+/* ── layout ──────────────────────────────────────────────────────── */
+
+/* The global controls in a column on the left, the bands taking the rest */
+.body {
+  height: 1s;
+  child-left: 32px;
+  child-right: 32px;
+  child-top: 22px;
+  child-bottom: 20px;
+  col-between: 20px;
+}
+
+.controls-column {
+  width: 220px;
+  height: 1s;
+  row-between: 20px;
+}
+
+.column-frame {
+  height: auto;
+  row-between: 8px;
+}
+
+/* ── band panel ────────────────────────────────────────────────────── */
+
+/* A strip under the spectrum holding the selected band's panel, so nothing covers the spectrum */
+.band-strip {
+  height: 48px;
+  top: 10px;
+}
+
+.band-hint {
+  width: 1s;
+  top: 1s;
+  bottom: 1s;
+  child-left: 2px;
+  font-size: 10;
+  color: #ece8df73;
+}
+
+/* One compact row; every item sits on the bottom edge so the bars and buttons line up */
+.band-panel {
+  width: 1s;
+  height: 48px;
+  background-color: #2e2d2b;
+  border-width: 1px;
+  border-color: #ed8159;
+  child-left: 10px;
+  child-right: 10px;
+  col-between: 6px;
+}
+
+param-button.panel-on {
+  width: 18px;
+  height: 18px;
+  top: 1s;
+  bottom: 9px;
+  border-width: 1px;
+  border-color: #ed8159;
+  background-color: #00000000;
+}
+param-button.panel-on:checked {
+  background-color: #ed8159;
+}
+
+.panel-title {
+  width: auto;
+  height: 22px;
+  top: 1s;
+  bottom: 7px;
+  child-top: 1s;
+  child-bottom: 1s;
+  font-size: 11;
+  font-weight: bold;
+  color: #ed8159;
+}
+
+.band-panel .segmented {
+  height: 22px;
+  width: auto;
+  top: 1s;
+  bottom: 7px;
+}
+
+segment-button.shape {
+  height: 22px;
+  child-left: 2px;
+  child-right: 2px;
+  border-color: #ed815973;
+  color: #ed8159;
+}
+segment-button.shape:checked {
+  background-color: #ed8159;
+  border-color: #ed8159;
+  color: #201f1e;
+}
+
+shape-icon {
+  width: 22px;
+  height: 14px;
   top: 1s;
   bottom: 1s;
 }
 
-/* ── stock widgets, recoloured ─────────────────────────────────────── */
+.band-panel .bar-cell {
+  width: 1s;
+  height: auto;
+  top: 1s;
+  bottom: 7px;
+  row-between: 2px;
+}
+.band-panel .bar-name {
+  height: 11px;
+  font-size: 9;
+}
+.band-panel bar-slider {
+  height: 22px;
+}
+.band-panel .bar-value {
+  child-left: 6px;
+  font-size: 10;
+}
+.band-panel .mode-cell {
+  width: auto;
+}
+/* Inside the mode cell the buttons sit under their caption like the bars do */
+.band-panel .mode-cell .segmented {
+  top: 0px;
+  bottom: 0px;
+}
 
-param-slider {
-  border-color: #191c1b;
-  background-color: #00000000;
-}
-param-slider:active,
-param-slider:hover {
-  background-color: #191c1b0d;
-}
-param-slider .fill {
-  background-color: #c2521a;
-}
-param-slider .fill--modulation {
-  background-color: #c2521a55;
-}
-param-slider .value-entry .caret {
-  background-color: #191c1b;
-}
-param-slider .value-entry .selection {
-  background-color: #191c1b30;
+/* Lilac: the band's dynamics, subordinate to the main controls they scale */
+.dynamics-rule {
+  width: 1px;
+  height: 34px;
+  top: 1s;
+  bottom: 7px;
+  background-color: #d3a7dc40;
 }
 
-param-button {
-  border-color: #191c1b;
+bar-slider.lilac {
+  color: #bd8dce;
+  border-color: #d3a7dc66;
+}
+
+segment-button.lilac {
+  height: 22px;
+  child-left: 5px;
+  child-right: 5px;
+  font-size: 9;
+  border-color: #d3a7dc66;
+  color: #bd8dce;
+}
+segment-button.lilac:checked {
+  background-color: #d3a7dc;
+  border-color: #d3a7dc;
+  color: #2e2d2b;
+}
+
+.panel-note {
+  width: 1s;
+  height: 22px;
+  top: 1s;
+  bottom: 7px;
+  child-top: 1s;
+  child-bottom: 1s;
+  font-size: 10;
+  color: #ece8df8c;
+}
+
+/* Soloing is live state, so it is amber */
+button.panel-solo {
+  height: 22px;
+  width: auto;
+  top: 1s;
+  bottom: 7px;
+  child-left: 7px;
+  child-right: 7px;
+  child-top: 1s;
+  child-bottom: 1s;
+  border-width: 1px;
+  border-color: #d9a329;
   background-color: #00000000;
+  color: #d9a329;
+  font-size: 9;
 }
-param-button:hover {
-  background-color: #191c1b12;
+button.panel-solo:checked {
+  background-color: #d9a329;
+  color: #201f1e;
 }
-param-button:checked {
-  background-color: #191c1b;
-  color: #f2f1ec;
+
+button.panel-close {
+  width: 22px;
+  height: 22px;
+  top: 1s;
+  bottom: 7px;
+  child-space: 1s;
+  border-width: 1px;
+  border-color: #ece8df47;
+  background-color: #00000000;
+  color: #ece8dfd9;
+}
+button.panel-close:hover {
+  border-color: #ece8df8c;
+}
+
+/* ── bars ──────────────────────────────────────────────────────────── */
+
+.bar-cell {
+  height: auto;
+  row-between: 4px;
+}
+
+bar-slider {
+  height: 26px;
+  width: 1s;
+  cursor: ns-resize;
+  background-color: #ece8df0a;
+  border-color: #ece8df38;
+}
+bar-slider:hover,
+bar-slider:active {
+  background-color: #ece8df14;
+}
+
+.bar-value {
+  width: 1s;
+  height: 1s;
+  child-left: 8px;
+  child-right: 1s;
+  child-top: 1s;
+  child-bottom: 1s;
+  font-size: 12;
+  font-weight: bold;
+}
+
+bar-slider.coral { color: #ed8159; }
+bar-slider.teal { color: #52b0a4; }
+bar-slider.steel { color: #6695c2; }
+bar-slider.ink { color: #ece8df; }
+
+/* The resize handle lives in the bottom right corner. Give it a bit more presence and a larger
+   grab area than the stock 20x20 so it is actually findable. */
+resize-handle {
+  color: #ece8df;
+  width: 22px;
+  height: 22px;
+  opacity: 0.3;
+}
+resize-handle:hover,
+resize-handle:active {
+  opacity: 0.7;
 }

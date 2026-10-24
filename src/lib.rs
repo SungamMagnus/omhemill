@@ -22,7 +22,7 @@ use nih_plug::prelude::*;
 use nih_plug_vizia::ViziaState;
 use realfft::num_complex::Complex32;
 use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Arc, Mutex};
 use triple_buffer::TripleBuffer;
 
@@ -31,6 +31,7 @@ mod compressor_bank;
 mod curve;
 mod dry_wet_mixer;
 mod editor;
+mod presets;
 
 const MIN_WINDOW_ORDER: usize = 6;
 #[allow(dead_code)]
@@ -101,6 +102,10 @@ pub struct OmhemillParams {
     /// it's expanded or not.
     #[persist = "editor-mode"]
     pub editor_mode: Arc<AtomicCell<EditorMode>>,
+    /// The name of the preset last loaded or saved, so the preset field shows it again when the
+    /// session is reopened.
+    #[persist = "preset-name"]
+    pub preset_name: Mutex<String>,
 
     // NOTE: These `Arc`s are only here temporarily to work around Vizia's Lens requirements so we
     // can use the generic UIs
@@ -115,6 +120,10 @@ pub struct OmhemillParams {
     /// Parameters for the upwards and downwards compressors.
     #[nested(group = "compressors")]
     pub compressors: compressor_bank::CompressorBankParams,
+
+    /// The band being soloed from the editor, or -1. This is a monitoring aid rather than a
+    /// parameter, so it is neither automatable nor saved.
+    pub solo_band: Arc<AtomicI32>,
 }
 
 /// Global parameters controlling the output stage and all compressors.
@@ -149,6 +158,13 @@ pub struct GlobalParams {
     /// compression.
     #[id = "release"]
     pub compressor_release_ms: FloatParam,
+
+    /// Hear only what the brake removes (or adds) instead of the result.
+    #[id = "delta"]
+    pub delta: BoolParam,
+    /// The host's bypass: the latency compensated dry signal.
+    #[id = "bypass"]
+    pub bypass: BoolParam,
 }
 
 impl Default for Omhemill {
@@ -196,7 +212,7 @@ impl Default for GlobalParams {
             // We don't need any smoothing for these parameters as the overlap-add process will
             // already act as a form of smoothing
             output_gain: FloatParam::new(
-                "Output Gain",
+                "Output",
                 util::db_to_gain(0.0),
                 FloatRange::Skewed {
                     min: util::db_to_gain(-50.0),
@@ -257,6 +273,9 @@ impl Default for GlobalParams {
             )
             .with_unit(" ms")
             .with_step_size(0.1),
+
+            delta: BoolParam::new("Delta", false),
+            bypass: BoolParam::new("Bypass", false).make_bypass(),
         }
     }
 }
@@ -270,6 +289,7 @@ impl OmhemillParams {
         OmhemillParams {
             editor_state: editor::default_state(editor_mode.clone()),
             editor_mode,
+            preset_name: Mutex::new(String::from("Init")),
 
             // TODO: Do still enable per-block smoothing for these settings, because why not. This
             //       will require updating the compressor bank.
@@ -277,6 +297,8 @@ impl OmhemillParams {
 
             threshold: Arc::new(compressor_bank::ThresholdParams::new(compressor_bank)),
             compressors: compressor_bank::CompressorBankParams::new(compressor_bank),
+
+            solo_band: Arc::new(AtomicI32::new(-1)),
         }
     }
 }
@@ -327,6 +349,13 @@ impl Plugin for Omhemill {
 
                 analyzer_data: self.analyzer_output_data.clone(),
                 sample_rate: self.sample_rate.clone(),
+                selected_band: None,
+                solo_band: None,
+                presets: Vec::new(),
+                preset_index: None,
+                preset_name: self.params.preset_name.lock().unwrap().clone(),
+                saving: false,
+                save_name: String::new(),
             },
         )
     }
@@ -492,13 +521,26 @@ impl Plugin for Omhemill {
             }
         }
 
+        // Bypass is the dry signal alone. Delta and solo are already worked into the wet signal in
+        // the STFT, so they are heard without any dry mixed back in.
+        let mix = self
+            .params
+            .global
+            .dry_wet_ratio
+            .smoothed
+            .next_step(buffer.samples() as u32);
+        let mix = if self.params.global.bypass.value() {
+            0.0
+        } else if self.params.global.delta.value()
+            || self.params.solo_band.load(Ordering::Relaxed) >= 0
+        {
+            1.0
+        } else {
+            mix
+        };
         self.dry_wet_mixer.mix_in_dry(
             buffer,
-            self.params
-                .global
-                .dry_wet_ratio
-                .smoothed
-                .next_step(buffer.samples() as u32),
+            mix,
             // The dry and wet signals are in phase, so we can do a linear mix
             dry_wet_mixer::MixingStyle::Linear,
             self.stft.latency_samples() as usize,
