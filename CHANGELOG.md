@@ -20,7 +20,7 @@ design system, with controls named the way a classic compressor and EQ name them
 
 - Eight bands in place of the six nodes, each like a dynamic EQ band: a shape (low cut, low shelf,
   bell, high shelf, high cut), Freq, Q, a Threshold relative to the main one, and band dynamics:
-  Ratio ×, Attack/Release ×, Range and Mode. Cuts set where compression works rather than filter
+  Ratio (its own, or Main to follow the main one), Attack/Release ×, Range and Mode. Cuts set where compression works rather than filter
   the audio. The bands are resolved into per-bin arrays only when they change, and envelope
   followers now run at a per-bin speed.
 - A global Mode: Downward, Upward or Both. Both directions take the Ratio control, and upward
@@ -44,6 +44,10 @@ design system, with controls named the way a classic compressor and EQ name them
   threshold; pulling a band down compresses harder. The gain reduction shows as amber between the
   input and output spectra.
 - The spectrum shows levels down to -120 dB, so quiet detail is visible and can be aimed at.
+- Ratio runs from 1:1 to 20:1 with even travel, instead of 1:1 to 500:1 with the useful part
+  squeezed into the bottom quarter.
+- Upward compression is no longer rolled off towards the highs (Spectral Compressor's 75% default
+  weakened the ratio across most of the spectrum).
 - One Resolution control (Fast, Balanced, Fine, Ultra) sets window size and overlap together.
 - The window is 1200×645 and the footer is gone.
 

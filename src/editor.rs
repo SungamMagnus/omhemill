@@ -578,9 +578,9 @@ fn band_strip(cx: &mut Context) {
     .class("band-strip");
 }
 
-/// The band panel, one compact row in the band's colour: on/off, the shape, frequency, Q and
-/// threshold, then the band's dynamics in lilac (ratio and timing multipliers, range and mode),
-/// then solo and close. A cut has no threshold or dynamics, only a note saying what it does.
+/// The band panel, one compact row in the band's colour: on/off and solo, the shape, frequency,
+/// Q and threshold, then the band's dynamics in lilac (its own ratio, a timing multiplier, range
+/// and mode), then reset. A cut has no threshold or dynamics, only a note saying what it does.
 fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, HStack> {
     let color_class = band_class(idx);
     HStack::new(cx, move |cx| {
@@ -661,14 +661,14 @@ fn band_panel(cx: &mut Context, idx: usize) -> Handle<'_, HStack> {
                 &color_class,
             );
 
-            // The band's dynamics scale the main ratio and timing, and limit the gain change, in
-            // this band only
+            // The band's dynamics: its own ratio, a multiplier on the main timing, and a limit on
+            // the gain change, in this band only
             Element::new(cx).class("dynamics-rule");
             labeled_bar(
                 cx,
                 Data::params,
                 move |p| &p.threshold.bands[idx].sharp,
-                "RATIO x",
+                "RATIO",
                 "lilac",
             );
             labeled_bar(

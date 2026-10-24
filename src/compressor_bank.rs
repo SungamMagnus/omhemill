@@ -22,7 +22,7 @@ use std::sync::Arc;
 use crate::analyzer::AnalyzerData;
 use crate::curve::{
     octaves_from_q, q_from_octaves, Action, BandAction, BandSettings, BandShape, Curve, CurveParams,
-    NUM_BANDS, RANGE_UNLIMITED_DB,
+    BAND_RATIO_FOLLOWS_MAIN_BELOW, NUM_BANDS, RANGE_UNLIMITED_DB,
 };
 use crate::OmhemillParams;
 
@@ -110,7 +110,10 @@ pub struct CompressorBank {
     /// and raises the upwards ones.
     band_sensitivities_db: Vec<f32>,
     /// What the global ratio is multiplied by in each bin.
-    band_sharps: Vec<f32>,
+    band_ratio_weights: Vec<f32>,
+    /// The natural logarithm of the ratio the bands ask for in each bin. See
+    /// [`crate::curve::BinShape::ln_ratio`].
+    band_ln_ratios: Vec<f32>,
     /// What the envelope followers' speed is multiplied by in each bin.
     band_speeds: Vec<f32>,
     /// The most gain change allowed in each bin, in decibels, or infinity.
@@ -338,7 +341,8 @@ impl ThresholdParams {
                 width_octaves: octaves_from_q(band.q.value()),
                 // A lower band threshold means more processing, which is what sensitivity counts
                 sensitivity_db: -band.threshold_db.value(),
-                ln_sharp: band.sharp.value().ln(),
+                ln_ratio: (band.sharp.value() >= BAND_RATIO_FOLLOWS_MAIN_BELOW)
+                    .then(|| band.sharp.value().ln()),
                 ln_speed: band.speed.value().ln(),
                 range_db: band.range_db.value(),
                 action: band.action.value(),
@@ -415,18 +419,34 @@ impl BandParams {
             .with_callback(float_callback.clone())
             .with_unit(" dB")
             .with_step_size(0.1),
+            // The band's own ratio, on the same 1:1 to 20:1 scale as the main one. The bottom of
+            // the range, below 1:1, reads Main: the band follows the main Ratio.
             sharp: FloatParam::new(
                 "Band Ratio",
-                1.0,
+                0.5,
                 FloatRange::Skewed {
-                    min: 0.25,
-                    max: 4.0,
+                    min: 0.5,
+                    max: 20.0,
                     factor: FloatRange::skew_factor(-1.0),
                 },
             )
             .with_callback(float_callback.clone())
-            .with_value_to_string(v2s_multiplier())
-            .with_string_to_value(s2v_multiplier()),
+            .with_step_size(0.01)
+            .with_value_to_string(Arc::new(|value| {
+                if value < BAND_RATIO_FOLLOWS_MAIN_BELOW {
+                    String::from("Main")
+                } else {
+                    format!("{value:.2}:1")
+                }
+            }))
+            .with_string_to_value(Arc::new(|string| {
+                let string = string.trim();
+                if string.eq_ignore_ascii_case("main") {
+                    Some(0.5)
+                } else {
+                    string.trim_end_matches(":1").trim().parse().ok()
+                }
+            })),
             speed: FloatParam::new(
                 "Band Attack/Release",
                 1.0,
@@ -553,10 +573,13 @@ impl CompressorParams {
                         format!("{name_prefix} Ratio")
                     },
                     1.0,
+                    // 1:1 to 20:1, where every part of the travel is audible. Past about 20:1 a
+                    // compressor already behaves as a limiter, so a longer range would only spend
+                    // the bar on values that sound the same.
                     FloatRange::Skewed {
                         min: 1.0,
-                        max: 500.0,
-                        factor: FloatRange::skew_factor(-2.0),
+                        max: 20.0,
+                        factor: FloatRange::skew_factor(-1.0),
                     },
                 )
                 .with_callback(set_update_ratios.clone())
@@ -574,14 +597,11 @@ impl CompressorParams {
             },
             high_freq_ratio_rolloff: FloatParam::new(
                 format!("{name_prefix} Hi-Freq Rolloff"),
-                // TODO: Bit of a hacky way to set the default values differently for upwards and
-                //       downwards compressors
-                if name_prefix == UPWARDS_NAME_PREFIX {
-                    0.75
-                } else {
-                    // When used subtly, no rolloff is usually better for downwards compression
-                    0.0
-                },
+                // No rolloff in either direction. Spectral Compressor rolled the upwards ratio off by
+                // 75%, which, measured from 0 Hz on a log scale, cut a 4:1 lift to about 1.6:1
+                // already at 1 kHz and made Ratio feel weak. Hiss is kept in check by the lift
+                // limit, and a high cut or a band's Range where it matters.
+                0.0,
                 FloatRange::Linear { min: 0.0, max: 1.0 },
             )
             .with_callback(set_update_ratios)
@@ -640,7 +660,8 @@ impl CompressorBank {
             upwards_knee_parabola_intercept: Vec::with_capacity(complex_buffer_len),
 
             band_sensitivities_db: Vec::with_capacity(complex_buffer_len),
-            band_sharps: Vec::with_capacity(complex_buffer_len),
+            band_ratio_weights: Vec::with_capacity(complex_buffer_len),
+            band_ln_ratios: Vec::with_capacity(complex_buffer_len),
             band_speeds: Vec::with_capacity(complex_buffer_len),
             band_ranges_db: Vec::with_capacity(complex_buffer_len),
             band_down_weights: Vec::with_capacity(complex_buffer_len),
@@ -697,7 +718,8 @@ impl CompressorBank {
 
         for per_bin in [
             &mut self.band_sensitivities_db,
-            &mut self.band_sharps,
+            &mut self.band_ratio_weights,
+            &mut self.band_ln_ratios,
             &mut self.band_speeds,
             &mut self.band_ranges_db,
             &mut self.band_down_weights,
@@ -752,7 +774,8 @@ impl CompressorBank {
             .resize(complex_buffer_len, 1.0);
 
         self.band_sensitivities_db.resize(complex_buffer_len, 0.0);
-        self.band_sharps.resize(complex_buffer_len, 1.0);
+        self.band_ratio_weights.resize(complex_buffer_len, 0.0);
+        self.band_ln_ratios.resize(complex_buffer_len, 0.0);
         self.band_speeds.resize(complex_buffer_len, 1.0);
         self.band_ranges_db.resize(complex_buffer_len, f32::INFINITY);
         self.band_down_weights.resize(complex_buffer_len, 1.0);
@@ -1335,7 +1358,8 @@ impl CompressorBank {
             for (bin_idx, ln_freq) in self.ln_freqs.iter().enumerate() {
                 let shape = curve.shape_ln(*ln_freq);
                 self.band_sensitivities_db[bin_idx] = shape.sensitivity_db;
-                self.band_sharps[bin_idx] = shape.sharp;
+                self.band_ratio_weights[bin_idx] = shape.ratio_weight;
+                self.band_ln_ratios[bin_idx] = shape.ln_ratio;
                 self.band_speeds[bin_idx] = shape.speed;
                 self.band_ranges_db[bin_idx] = shape.range_db;
                 self.band_down_weights[bin_idx] = shape.down_weight;
@@ -1402,22 +1426,31 @@ impl CompressorBank {
                 .store(true, Ordering::SeqCst);
         }
 
-        // Both directions take their ratio from Sharpness, the downwards ratio parameter. If the
-        // high-frequency rolloff is enabled then higher frequency bins will have their ratios
-        // reduced to reduce harshness. This follows the octave scale. It's easier to do this
-        // cleanly using reciprocals. A band's sharp multiplier then scales how far the ratio is
-        // from 1:1.
+        // Both directions take their ratio from the Ratio control, the downwards ratio parameter.
+        // If the high-frequency rolloff is enabled then higher frequency bins will have their
+        // ratios reduced to reduce harshness. This follows the octave scale. It's easier to do
+        // this cleanly using reciprocals. Bands with a ratio of their own then take over from it
+        // as far as they reach.
         let target_ratio_recip = params.compressors.downwards.ratio.value().recip();
-        let compute_ratios = |ratios: &mut Vec<f32>, rolloff: f32, ln_freqs: &[f32], sharps: &[f32]| {
-            for ((ln_freq, sharp), ratio) in ln_freqs.iter().zip(sharps.iter()).zip(ratios.iter_mut())
+        let compute_ratios = |ratios: &mut Vec<f32>,
+                              rolloff: f32,
+                              ln_freqs: &[f32],
+                              band_ratio_weights: &[f32],
+                              band_ln_ratios: &[f32]| {
+            for (((ln_freq, band_weight), band_ln_ratio), ratio) in ln_freqs
+                .iter()
+                .zip(band_ratio_weights.iter())
+                .zip(band_ln_ratios.iter())
+                .zip(ratios.iter_mut())
             {
                 let octave_fraction = ln_freq / HIGH_FREQ_RATIO_ROLLOFF_FREQUENCY_LN;
                 let rolloff_t = octave_fraction * rolloff;
 
                 // If the octave fraction times the rolloff amount is high, then this should get
                 // closer to `high_freq_ratio_rolloff` (which is in [0, 1]).
-                let ratio_recip = (target_ratio_recip * (1.0 - rolloff_t)) + rolloff_t;
-                *ratio = 1.0 + ((ratio_recip.recip() - 1.0) * sharp);
+                let main_ratio = ((target_ratio_recip * (1.0 - rolloff_t)) + rolloff_t).recip();
+                *ratio = ((1.0 - band_weight) * main_ratio.ln() + band_weight * band_ln_ratio)
+                    .exp();
             }
         };
 
@@ -1426,7 +1459,8 @@ impl CompressorBank {
                 &mut self.downwards_ratios,
                 params.compressors.downwards.high_freq_ratio_rolloff.value(),
                 &self.ln_freqs,
-                &self.band_sharps,
+                &self.band_ratio_weights,
+                &self.band_ln_ratios,
             );
             self.should_update_downwards_knee_parabolas
                 .store(true, Ordering::SeqCst);
@@ -1437,7 +1471,8 @@ impl CompressorBank {
                 &mut self.upwards_ratios,
                 params.compressors.upwards.high_freq_ratio_rolloff.value(),
                 &self.ln_freqs,
-                &self.band_sharps,
+                &self.band_ratio_weights,
+                &self.band_ln_ratios,
             );
             self.should_update_upwards_knee_parabolas
                 .store(true, Ordering::SeqCst);

@@ -39,9 +39,10 @@ Selecting a band, on the display or in the chip row below it, opens its panel.
 - **Freq**, **Q** (a bell's bandwidth, a shelf's slope, how sharply a cut sets in), and
   **Threshold** (±48 dB relative to the main Threshold, so a band can reach quiet detail on its
   own).
-- **Band dynamics** — **Ratio ×** and **Attack/Release ×** (×0.25 to ×4) scale the main Ratio and
-  timing inside the band, **Range** is the most gain change the band allows, and **Mode** follows
-  the header or makes the band downward, upward or off.
+- **Band dynamics** — **Ratio** is the band's own ratio (1:1 to 20:1), or **Main** to follow the
+  main Ratio. **Attack/Release ×** (×0.25 to ×4) scales the main timing inside the band, **Range**
+  is the most gain change the band allows, and **Mode** follows the header or makes the band
+  downward, upward or off.
 - **Solo** plays only the band's range. With Delta on, you hear only what that band removes.
 
 ## The rest

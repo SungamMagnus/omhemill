@@ -13,6 +13,9 @@ pub const NUM_BANDS: usize = 8;
 /// parameter; its old default is kept so the curve sits where it did.
 pub const CURVE_CENTER_HZ: f32 = 420.0;
 
+/// A band ratio below this follows the main Ratio instead of setting its own.
+pub const BAND_RATIO_FOLLOWS_MAIN_BELOW: f32 = 1.0;
+
 /// A band's range at or above this is no limit at all.
 pub const RANGE_UNLIMITED_DB: f32 = 48.0;
 /// How far a band's range limit relaxes towards the edge of the band, so a limit does not end in
@@ -113,7 +116,7 @@ pub struct BandSettings {
     /// How many decibels the threshold moves inside the band. Positive bites harder.
     pub sensitivity_db: f32,
     /// The natural logarithm of the band's ratio multiplier.
-    pub ln_sharp: f32,
+    pub ln_ratio: Option<f32>,
     /// The natural logarithm of the band's envelope speed multiplier.
     pub ln_speed: f32,
     /// The most gain change the band allows, in decibels. See [`RANGE_UNLIMITED_DB`].
@@ -129,7 +132,7 @@ impl Default for BandSettings {
             ln_freq: 1_000.0f32.ln(),
             width_octaves: 1.0,
             sensitivity_db: 0.0,
-            ln_sharp: 0.0,
+            ln_ratio: None,
             ln_speed: 0.0,
             range_db: RANGE_UNLIMITED_DB,
             action: BandAction::Auto,
@@ -215,7 +218,12 @@ pub struct BinShape {
     /// How far the threshold moves here. Positive means the brake bites harder.
     pub sensitivity_db: f32,
     /// What the global ratio is multiplied by here.
-    pub sharp: f32,
+    /// How much bands with their own ratio cover this frequency, from 0 (the main Ratio applies)
+    /// to 1 (theirs does).
+    pub ratio_weight: f32,
+    /// The natural logarithm of the ratio those bands ask for, averaged by how much each covers
+    /// this frequency.
+    pub ln_ratio: f32,
     /// What the envelope followers' speed is multiplied by here.
     pub speed: f32,
     /// The most gain change allowed here, or infinity.
@@ -224,6 +232,14 @@ pub struct BinShape {
     pub down_weight: f32,
     /// How much of the upwards gain change gets through, cuts included.
     pub up_weight: f32,
+}
+
+impl BinShape {
+    /// The ratio at this frequency, given the main one: the bands' own ratio as far as they reach,
+    /// the main one elsewhere, blended in the log domain.
+    pub fn ratio(&self, main_ratio: f32) -> f32 {
+        ((1.0 - self.ratio_weight) * main_ratio.ln() + self.ratio_weight * self.ln_ratio).exp()
+    }
 }
 
 /// Evaluates the threshold curve. The curve is evaluated in log-log space (so with octaves being
@@ -278,7 +294,8 @@ impl<'a> Curve<'a> {
         let (mut down_weight, mut up_weight) = self.params.action.weights();
         let mut sensitivity_db = 0.0;
         let mut mask = 1.0;
-        let mut ln_sharp = 0.0;
+        let mut ratio_weight = 0.0;
+        let mut ln_ratio = 0.0;
         let mut ln_speed = 0.0;
         let mut range_db = f32::INFINITY;
 
@@ -295,8 +312,12 @@ impl<'a> Curve<'a> {
             }
 
             sensitivity_db += band.sensitivity_db * membership;
-            // The multipliers blend in the log domain, so x2 and x0.5 cancel out
-            ln_sharp += band.ln_sharp * membership;
+            // A band's own ratio takes over from the main one as far as the band reaches
+            if let Some(band_ln_ratio) = band.ln_ratio {
+                ratio_weight += membership;
+                ln_ratio += band_ln_ratio * membership;
+            }
+            // The speed multipliers blend in the log domain, so x2 and x0.5 cancel out
             ln_speed += band.ln_speed * membership;
             if band.range_db < RANGE_UNLIMITED_DB {
                 range_db = range_db.min(band.range_db + (1.0 - membership) * RANGE_FADE_DB);
@@ -309,7 +330,12 @@ impl<'a> Curve<'a> {
 
         BinShape {
             sensitivity_db,
-            sharp: ln_sharp.exp(),
+            ratio_weight: ratio_weight.min(1.0),
+            ln_ratio: if ratio_weight > 0.0 {
+                ln_ratio / ratio_weight
+            } else {
+                0.0
+            },
             speed: ln_speed.exp(),
             range_db,
             down_weight: down_weight * mask,
@@ -358,7 +384,7 @@ mod tests {
         let shape = curve.shape_ln(1_000.0f32.ln());
 
         assert_eq!(shape.sensitivity_db, 0.0);
-        assert_eq!(shape.sharp, 1.0);
+        assert_eq!(shape.ratio_weight, 0.0);
         assert_eq!(shape.speed, 1.0);
         assert_eq!(shape.range_db, f32::INFINITY);
         assert_eq!((shape.down_weight, shape.up_weight), (1.0, 0.0));
@@ -412,7 +438,7 @@ mod tests {
     #[test]
     fn trims_and_actions_apply_inside_the_band_only() {
         let params = params_with(&[BandSettings {
-            ln_sharp: 2.0f32.ln(),
+            ln_ratio: Some(4.0f32.ln()),
             ln_speed: 4.0f32.ln(),
             range_db: 6.0,
             action: BandAction::Lift,
@@ -421,13 +447,13 @@ mod tests {
         let curve = Curve::new(&params);
 
         let inside = curve.shape_ln(3_000.0f32.ln());
-        assert!((inside.sharp - 2.0).abs() < 1e-4);
+        assert!((inside.ratio(2.0) - 4.0).abs() < 1e-3);
         assert!((inside.speed - 4.0).abs() < 1e-3);
         assert!((inside.range_db - 6.0).abs() < 1e-4);
         assert!(inside.down_weight < 1e-4 && (inside.up_weight - 1.0).abs() < 1e-4);
 
         let outside = curve.shape_ln(300.0f32.ln());
-        assert_eq!(outside.sharp, 1.0);
+        assert_eq!(outside.ratio(2.0), 2.0);
         assert_eq!(outside.range_db, f32::INFINITY);
         assert_eq!((outside.down_weight, outside.up_weight), (1.0, 0.0));
     }
