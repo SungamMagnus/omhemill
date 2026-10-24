@@ -36,7 +36,7 @@ const THRESHOLD_LINE_COLOR: vg::Color = vg::Color::rgbaf(0.925, 0.910, 0.875, 1.
 /// centred on the display like an EQ's gain axis: this many decibels reach
 /// [`THRESHOLD_HALF_HEIGHT`] of the way to the edge. Down is a lower threshold, so more
 /// compression, the way pulling an EQ band down cuts.
-const THRESHOLD_RANGE_DB: f32 = 18.0;
+const THRESHOLD_RANGE_DB: f32 = 48.0;
 const THRESHOLD_HALF_HEIGHT: f32 = 0.45;
 const NODE_DISABLED_COLOR: vg::Color = vg::Color::rgbaf(0.925, 0.910, 0.875, 0.38);
 /// The stage the spectrum sits on, used to punch the number out of a filled handle.
@@ -57,8 +57,10 @@ const PEAK_FALL_DB_PER_SECOND: f32 = 12.0;
 /// [`GAIN_TRACE_HEIGHT`] of the display's height.
 const GAIN_TRACE_RANGE_DB: f32 = 24.0;
 const GAIN_TRACE_HEIGHT: f32 = 0.16;
-/// Below this a bin counts as silent.
-const FLOOR_DB: f32 = -100.0;
+/// The spectrum's scale: this level sits on the bottom edge and [`SPECTRUM_TOP_DB`] on the top, so
+/// quiet detail well below the music still shows.
+const FLOOR_DB: f32 = -120.0;
+const SPECTRUM_TOP_DB: f32 = 12.0;
 
 /// How many pixels a decibel of gain change takes on a band's meter, and the meter's longest bar.
 const METER_PX_PER_DB: f32 = 4.0;
@@ -503,11 +505,11 @@ impl View for Analyzer {
     }
 }
 
-/// Compute an unclamped value based on a decibel value -80 and is mapped to 0, +20 is mapped to 1,
-/// and all other values are linearly interpolated from there
+/// Where a level sits on the spectrum's scale: [`FLOOR_DB`] is 0, [`SPECTRUM_TOP_DB`] is 1, and
+/// everything else is linearly interpolated from there.
 #[inline]
 fn db_to_unclamped_t(db_value: f32) -> f32 {
-    (db_value + 80.0) / 100.0
+    (db_value - FLOOR_DB) / (SPECTRUM_TOP_DB - FLOOR_DB)
 }
 
 /// Where a band threshold sits vertically within `bounds`.
@@ -587,7 +589,8 @@ impl Analyzer {
             .with_line_width(scale);
         let label_color = vg::Color::rgbaf(ink.r, ink.g, ink.b, 0.45);
 
-        // A fainter grid between the labelled lines: every step of each decade, and every 6 dB
+        // A fainter grid between the labelled lines: every step of each decade, and the 12 dB
+        // steps between the labelled 24 dB ones
         let mut minor = vg::Path::new();
         for decade in [10.0f32, 100.0, 1_000.0, 10_000.0] {
             for step in 2..10 {
@@ -599,7 +602,7 @@ impl Analyzer {
                 }
             }
         }
-        for db in [-6.0f32, -18.0, -30.0, -42.0, -54.0, -66.0, -78.0] {
+        for db in [0.0f32, -12.0, -36.0, -60.0, -84.0, -108.0] {
             let y = (bounds.y + bounds.h * (1.0 - db_to_unclamped_t(db))).round() + 0.5;
             minor.move_to(bounds.x, y);
             minor.line_to(bounds.x + bounds.w, y);
@@ -635,7 +638,7 @@ impl Analyzer {
             }
         }
 
-        for db in [-12.0f32, -24.0, -36.0, -48.0, -60.0, -72.0] {
+        for db in [-24.0f32, -48.0, -72.0, -96.0] {
             let y = bounds.y + bounds.h * (1.0 - db_to_unclamped_t(db));
             if y < bounds.y || y > bounds.y + bounds.h {
                 continue;
@@ -673,7 +676,7 @@ impl Analyzer {
             &vg::Paint::color(vg::Color::rgbaf(ink.r, ink.g, ink.b, 0.22)).with_line_width(scale),
         );
 
-        for threshold_db in [12.0f32, 0.0, -12.0] {
+        for threshold_db in [24.0f32, 0.0, -24.0] {
             if let Some(mut paint) = self.text_paint(canvas, label_color, 10.0 * scale) {
                 paint.set_text_align(vg::Align::Left);
                 paint.set_text_baseline(vg::Baseline::Middle);
@@ -918,7 +921,7 @@ impl Analyzer {
         );
 
         // The readout, kept inside the display
-        let input = if input_db.is_finite() && input_db > -100.0 {
+        let input = if input_db.is_finite() && input_db > FLOOR_DB {
             format!("in {input_db:.1} dB")
         } else {
             String::from("in -inf")

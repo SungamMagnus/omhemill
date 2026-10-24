@@ -24,7 +24,7 @@ design system, with controls named the way a classic compressor and EQ name them
   the audio. The bands are resolved into per-bin arrays only when they change, and envelope
   followers now run at a per-bin speed.
 - A global Mode: Downward, Upward or Both. Both directions take the Ratio control, and upward
-  compression is capped at 24 dB.
+  compression is capped at 36 dB.
 - A floating band panel that follows the selected band, with a shape picker, the band's controls
   and Solo.
 - Delta, to hear only what the compression changes, and Bypass, the host's bypass.
@@ -43,6 +43,7 @@ design system, with controls named the way a classic compressor and EQ name them
 - The display draws a flat threshold line on its own scale instead of the sloped absolute
   threshold; pulling a band down compresses harder. The gain reduction shows as amber between the
   input and output spectra.
+- The spectrum shows levels down to -120 dB, so quiet detail is visible and can be aimed at.
 - One Resolution control (Fast, Balanced, Fine, Ultra) sets window size and overlap together.
 - The window is 1200×645 and the footer is gone.
 

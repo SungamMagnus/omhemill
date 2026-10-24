@@ -14,7 +14,7 @@ pub const NUM_BANDS: usize = 8;
 pub const CURVE_CENTER_HZ: f32 = 420.0;
 
 /// A band's range at or above this is no limit at all.
-pub const RANGE_UNLIMITED_DB: f32 = 30.0;
+pub const RANGE_UNLIMITED_DB: f32 = 48.0;
 /// How far a band's range limit relaxes towards the edge of the band, so a limit does not end in
 /// a hard step where the band's influence fades out.
 const RANGE_FADE_DB: f32 = 60.0;

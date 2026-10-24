@@ -37,7 +37,8 @@ Selecting a band, on the display or in the chip row below it, opens its panel.
 - **Shape** — low cut, low shelf, bell, high shelf, high cut. The cuts do not filter the audio; they
   set where compression works at all.
 - **Freq**, **Q** (a bell's bandwidth, a shelf's slope, how sharply a cut sets in), and
-  **Threshold** (±18 dB relative to the main Threshold).
+  **Threshold** (±48 dB relative to the main Threshold, so a band can reach quiet detail on its
+  own).
 - **Band dynamics** — **Ratio ×** and **Attack/Release ×** (×0.25 to ×4) scale the main Ratio and
   timing inside the band, **Range** is the most gain change the band allows, and **Mode** follows
   the header or makes the band downward, upward or off.

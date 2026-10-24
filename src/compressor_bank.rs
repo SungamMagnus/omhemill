@@ -50,7 +50,7 @@ const DEFAULT_BAND_FREQUENCIES: [f32; NUM_BANDS] = [
 
 /// The most a bin can ever be lifted, in decibels. Upwards compression at a high ratio would
 /// otherwise raise a near-silent bin all the way up to the curve.
-const LIFT_LIMIT_DB: f32 = 24.0;
+const LIFT_LIMIT_DB: f32 = 36.0;
 
 /// The length of time over which the envelope followers fade back from being instant to using the
 /// configured timingsafter the compressor bank has been reset.
@@ -408,8 +408,8 @@ impl BandParams {
                 "Band Threshold",
                 0.0,
                 FloatRange::Linear {
-                    min: -18.0,
-                    max: 18.0,
+                    min: -48.0,
+                    max: 48.0,
                 },
             )
             .with_callback(float_callback.clone())
